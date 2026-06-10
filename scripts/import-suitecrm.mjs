@@ -1059,8 +1059,14 @@ function insertRows(db, sql, rows, mapper) {
   }
 }
 
+function placeholders(count) {
+  return Array.from({ length: count }, () => "?").join(", ");
+}
+
 function writeSqlite(data) {
-  if (fs.existsSync(sqliteFile)) fs.unlinkSync(sqliteFile);
+  for (const file of [sqliteFile, `${sqliteFile}-wal`, `${sqliteFile}-shm`]) {
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+  }
   const db = new DatabaseSync(sqliteFile);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
   db.exec(`
@@ -1471,7 +1477,7 @@ function writeSqlite(data) {
     insertRows(db, "INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", data.products, (r) => [r.id, r.name, r.partNumber, r.type, r.categoryId, r.price, r.cost, r.deleted ? 1 : 0, r.createdAt, r.updatedAt, json(r.legacy)]);
     insertRows(db, "INSERT INTO currencies VALUES (?, ?, ?, ?, ?, ?, ?, ?)", data.currencies, (r) => [r.id, r.name, r.symbol, r.iso4217, r.conversionRate, r.status, r.deleted ? 1 : 0, json(r.legacy)]);
     insertRows(db, "INSERT INTO quote_templates VALUES (?, ?, ?, ?, ?, ?)", data.quoteTemplates, (r) => [r.id, r.name || "Plantilla", r.type, r.active ? 1 : 0, r.deleted ? 1 : 0, json(r.legacy)]);
-    insertRows(db, "INSERT INTO quotes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", data.quotes, (r) => [r.id, r.number, r.name, r.accountId, r.contactId, r.opportunityId || r.legacy?.opportunity_id || null, r.stage, r.approvalStatus, r.approvalIssue, r.invoiceStatus, r.term, r.terms, r.paymentMethod, r.deliveryTime, r.observations, r.originCountry, json(r.templateIds || []), json(r.templateNames || []), r.subtotal, r.discount, r.tax, r.shipping, r.shippingTax, r.total, r.currencyId, r.currencyName, r.currencySymbol, r.currencyIso, r.expiration, r.billingAddress, r.shippingAddress, r.billingStreet, r.billingCity, r.billingState, r.billingPostalCode, r.billingCountry, r.shippingStreet, r.shippingCity, r.shippingState, r.shippingPostalCode, r.shippingCountry, r.description, r.assignedUserId, r.assignedUser, r.deleted ? 1 : 0, r.createdAt, r.updatedAt, json(r.legacy)]);
+    insertRows(db, `INSERT INTO quotes VALUES (${placeholders(48)})`, data.quotes, (r) => [r.id, r.number, r.name, r.accountId, r.contactId, r.opportunityId || r.legacy?.opportunity_id || null, r.stage, r.approvalStatus, r.approvalIssue, r.invoiceStatus, r.term, r.terms, r.paymentMethod, r.deliveryTime, r.observations, r.originCountry, json(r.templateIds || []), json(r.templateNames || []), r.subtotal, r.discount, r.tax, r.shipping, r.shippingTax, r.total, r.currencyId, r.currencyName, r.currencySymbol, r.currencyIso, r.expiration, r.billingAddress, r.shippingAddress, r.billingStreet, r.billingCity, r.billingState, r.billingPostalCode, r.billingCountry, r.shippingStreet, r.shippingCity, r.shippingState, r.shippingPostalCode, r.shippingCountry, r.description, r.assignedUserId, r.assignedUser, r.deleted ? 1 : 0, r.createdAt, r.updatedAt, json(r.legacy)]);
     insertRows(db, "INSERT INTO quote_groups VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", data.quoteGroups, (r) => [r.id, r.quoteId, r.number, r.name, r.subtotal, r.discount, r.tax, r.total, r.currencyId, r.deleted ? 1 : 0, json(r.legacy)]);
     insertRows(db, "INSERT INTO quote_lines VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", data.quoteLines, (r) => [r.id, r.quoteId, r.groupId, r.productId, r.number, r.name, r.partNumber, r.description, r.quantity, r.costPrice, r.listPrice, r.unitPrice, r.discount, r.discountAmount, r.discountType, r.vatRate, r.vatAmount, r.total, r.currencyId, r.deleted ? 1 : 0, json(r.legacy)]);
     insertRows(db, "INSERT INTO invoices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", data.invoices, (r) => [r.id, r.number, r.name, r.accountId, r.contactId, r.status, r.total, r.dueDate, r.deleted ? 1 : 0, r.createdAt, r.updatedAt, json(r.legacy)]);
