@@ -4,17 +4,17 @@ Esta guia deja BIOCRM corriendo dentro de Ubuntu/WSL en una PC con Windows 10, p
 
 BIOCRM usa:
 
-- Frontend React/Vite en el puerto `5173`.
-- API Node/Express en el puerto `4177`.
+- Frontend React compilado y API Node/Express en el mismo puerto `5173` para publicacion.
+- API Node/Express en el puerto `4177` solo cuando trabajas en modo desarrollo.
 - SQLite en `data/biocrm.sqlite`.
 - Migracion inicial desde `respaldo_suitecrm.sql`.
 
 En Windows 10 con WSL2, Ubuntu queda detras de una red NAT. Por eso, para entrar desde otra PC no basta con abrir Vite en `0.0.0.0`: tambien hay que crear un reenvio de puerto en Windows con `netsh interface portproxy`.
 
-La configuracion recomendada es:
+La configuracion recomendada para publicar es:
 
-- La API queda escuchando solo dentro de WSL en `127.0.0.1:4177`.
-- Vite escucha dentro de WSL en `0.0.0.0:5173`.
+- BIOCRM escucha dentro de WSL en `0.0.0.0:5173`.
+- La API queda disponible en el mismo origen bajo `/api`.
 - Windows reenvia `IP_DE_WINDOWS:5173` hacia `IP_DE_WSL:5173`.
 - Las otras PCs entran por `http://IP_DE_WINDOWS:5173`.
 
@@ -181,28 +181,21 @@ export BIOCRM_ADMIN_PASSWORD="UnaContrasenaSegura"
 npm run import:suitecrm
 ```
 
-## 8. Probar BIOCRM dentro de WSL
+## 8. Publicar y probar BIOCRM dentro de WSL
 
-Abre dos terminales de Ubuntu.
+Para uso real en red local, ejecuta BIOCRM publicado en un solo proceso. Este modo compila React en `dist/` y Express sirve tanto la app como `/api` en el puerto `5173`.
 
-Terminal 1, API:
+En Ubuntu:
 
 ```bash
 cd ~/proyectos/BioCRM
-npm run dev:api
+npm run serve:lan
 ```
 
 Debe quedar en:
 
 ```text
-http://127.0.0.1:4177
-```
-
-Terminal 2, frontend:
-
-```bash
-cd ~/proyectos/BioCRM
-npx vite --host 0.0.0.0 --port 5173 --strictPort
+http://0.0.0.0:5173
 ```
 
 En la PC servidor abre el navegador de Windows y prueba:
@@ -211,7 +204,22 @@ En la PC servidor abre el navegador de Windows y prueba:
 http://localhost:5173
 ```
 
-No uses `npm run dev` si quieres acceso desde la red local, porque el script actual levanta Vite con `--host 127.0.0.1`.
+Verifica tambien la API desde el navegador:
+
+```text
+http://localhost:5173/api/health
+```
+
+Debe responder un JSON con `ok: true`.
+
+Para desarrollo con recarga rapida puedes usar:
+
+```bash
+cd ~/proyectos/BioCRM
+npm run dev:wsl
+```
+
+Pero para publicar a otros usuarios usa `npm run serve:lan`.
 
 ## 9. Obtener la IP interna de WSL
 
@@ -260,7 +268,7 @@ if (-not (Get-NetFirewallRule -DisplayName "BIOCRM WSL Web 5173" -ErrorAction Si
 }
 ```
 
-Normalmente no necesitas abrir el puerto `4177`, porque las llamadas `/api` pasan por el proxy de Vite en `5173`.
+No necesitas abrir el puerto `4177` para publicacion, porque las llamadas `/api` van por el mismo puerto `5173`.
 
 ## 12. Confirmar que la red de Windows sea privada
 
@@ -337,27 +345,20 @@ netsh interface portproxy add v4tov4 listenport=5173 listenaddress=0.0.0.0 conne
 netsh interface portproxy show v4tov4
 ```
 
-Tambien confirma que Vite siga corriendo en Ubuntu:
+Tambien confirma que BIOCRM siga corriendo en Ubuntu:
 
 ```bash
 cd ~/proyectos/BioCRM
-npx vite --host 0.0.0.0 --port 5173 --strictPort
+npm run serve:lan
 ```
 
 ## 16. Arranque manual rapido
 
-Ubuntu terminal 1:
+Ubuntu:
 
 ```bash
 cd ~/proyectos/BioCRM
-npm run dev:api
-```
-
-Ubuntu terminal 2:
-
-```bash
-cd ~/proyectos/BioCRM
-npx vite --host 0.0.0.0 --port 5173 --strictPort
+npm run serve:lan
 ```
 
 PowerShell Administrador:
@@ -414,7 +415,7 @@ Si vas a trabajar desde Windows y desde WSL, define una sola carpeta como fuente
 
 Revisa:
 
-1. Vite debe correr en WSL con `--host 0.0.0.0`.
+1. BIOCRM debe correr en WSL con `npm run serve:lan`.
 2. La regla `portproxy` debe apuntar a la IP WSL actual.
 3. El firewall de Windows debe permitir `5173`.
 4. La red de Windows debe estar como `Privada`.
@@ -423,11 +424,11 @@ Revisa:
 
 ### El navegador carga, pero la app muestra error de API
 
-Confirma que la API esta corriendo dentro de Ubuntu:
+Confirma que BIOCRM esta corriendo publicado dentro de Ubuntu:
 
 ```bash
 cd ~/proyectos/BioCRM
-npm run dev:api
+npm run serve:lan
 ```
 
 Prueba en Windows:
@@ -437,6 +438,8 @@ http://localhost:5173/api/health
 ```
 
 Debe responder un JSON con `ok: true`.
+
+Si esa URL devuelve HTML o la pantalla muestra `Unexpected token '<'`, estas sirviendo solo el frontend y no la API. Usa `npm run serve:lan` para publicar, no `vite preview`.
 
 ### `node:sqlite` no existe
 
@@ -478,15 +481,13 @@ Luego vuelve a iniciar API, frontend y `portproxy`.
 
 Reserva la IP de la PC servidor en el router. Es mejor que fijarla manualmente en Windows, porque evita conflictos DHCP.
 
-## 20. Mejora recomendada para el proyecto
+## 20. Scripts utiles del proyecto
 
-Para facilitar esta forma de ejecucion, conviene agregar scripts como estos a `package.json` en el futuro:
+El proyecto ya incluye estos comandos:
 
-```json
-{
-  "dev:web:lan": "vite --host 0.0.0.0 --port 5173 --strictPort",
-  "dev:wsl": "concurrently \"npm:dev:api\" \"npm:dev:web:lan\""
-}
+```bash
+npm run serve:lan
+npm run dev:wsl
 ```
 
-Tambien conviene permitir que la API use variables `HOST` y `PORT`, aunque para esta guia no hace falta exponerla directamente en la red.
+Usa `npm run serve:lan` para publicacion en red local. Usa `npm run dev:wsl` solo para desarrollo con recarga rapida.

@@ -8,7 +8,9 @@ import { DatabaseSync } from "node:sqlite";
 const app = express();
 const root = process.cwd();
 const dbFile = path.join(root, "data", "biocrm.sqlite");
+const distDir = path.join(root, "dist");
 const port = Number(process.env.PORT || 4177);
+const host = process.env.HOST || "127.0.0.1";
 
 if (!fs.existsSync(dbFile)) {
   console.error("No existe data/biocrm.sqlite. Ejecuta: npm run import:suitecrm");
@@ -17,6 +19,8 @@ if (!fs.existsSync(dbFile)) {
 
 const db = new DatabaseSync(dbFile);
 db.exec("PRAGMA foreign_keys = ON;");
+
+const existingTables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
 
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
@@ -115,6 +119,10 @@ function get(sql, params = []) {
 
 function run(sql, params = []) {
   return db.prepare(sql).run(...params.map((value) => (value === undefined ? null : value)));
+}
+
+function hasTable(table) {
+  return existingTables.has(table);
 }
 
 function audit(req, action, entity, entityId, before, after) {
@@ -382,8 +390,8 @@ app.get("/api/directory", (req, res) => {
     industries: all("SELECT DISTINCT industry FROM accounts WHERE industry IS NOT NULL AND industry <> '' ORDER BY industry").map((row) => row.industry),
     statuses: all("SELECT DISTINCT status FROM accounts WHERE status IS NOT NULL AND status <> '' ORDER BY status").map((row) => row.status),
     users: all("SELECT id, user_name, full_name, status, title, department, email, phone FROM users ORDER BY full_name"),
-    currencies: all("SELECT id, name, symbol, iso4217, conversion_rate, status FROM currencies WHERE deleted = 0 ORDER BY name"),
-    quoteTemplates: all("SELECT id, name, type, active FROM quote_templates WHERE deleted = 0 AND active = 1 ORDER BY name")
+    currencies: hasTable("currencies") ? all("SELECT id, name, symbol, iso4217, conversion_rate, status FROM currencies WHERE deleted = 0 ORDER BY name") : [],
+    quoteTemplates: hasTable("quote_templates") ? all("SELECT id, name, type, active FROM quote_templates WHERE deleted = 0 AND active = 1 ORDER BY name") : []
   });
 });
 
@@ -685,14 +693,16 @@ function accountQuoteDefaults(accountId) {
 app.get("/api/quote-context", (req, res) => {
   const accountContext = req.query.accountId ? accountQuoteDefaults(req.query.accountId) : null;
   const nextNumber = (db.prepare("SELECT MAX(CAST(number AS INTEGER)) AS max_number FROM quotes").get().max_number || 0) + 1;
-  const template = get("SELECT id, name FROM quote_templates WHERE deleted = 0 AND active = 1 ORDER BY name LIMIT 1");
-  const currency = get("SELECT id, name, symbol, iso4217 FROM currencies WHERE id = '-99'") || get("SELECT id, name, symbol, iso4217 FROM currencies WHERE deleted = 0 ORDER BY name LIMIT 1");
+  const template = hasTable("quote_templates") ? get("SELECT id, name FROM quote_templates WHERE deleted = 0 AND active = 1 ORDER BY name LIMIT 1") : null;
+  const currency = hasTable("currencies")
+    ? get("SELECT id, name, symbol, iso4217 FROM currencies WHERE id = '-99'") || get("SELECT id, name, symbol, iso4217 FROM currencies WHERE deleted = 0 ORDER BY name LIMIT 1")
+    : null;
   res.json({
     nextNumber,
     accountContext,
     users: all("SELECT id, full_name, email, phone FROM users ORDER BY full_name"),
-    currencies: all("SELECT id, name, symbol, iso4217 FROM currencies WHERE deleted = 0 ORDER BY name"),
-    templates: all("SELECT id, name, type FROM quote_templates WHERE deleted = 0 AND active = 1 ORDER BY name"),
+    currencies: hasTable("currencies") ? all("SELECT id, name, symbol, iso4217 FROM currencies WHERE deleted = 0 ORDER BY name") : [],
+    templates: hasTable("quote_templates") ? all("SELECT id, name, type FROM quote_templates WHERE deleted = 0 AND active = 1 ORDER BY name") : [],
     products: all("SELECT id, name, part_number, type, price, cost, legacy_json FROM products WHERE deleted = 0 ORDER BY name COLLATE NOCASE LIMIT 500"),
     defaults: {
       stage: "Draft",
@@ -721,9 +731,9 @@ function createQuote(req, res) {
   if (!Array.isArray(body.lines) || body.lines.length === 0) return res.status(400).json({ error: "La cotizacion necesita al menos una linea" });
   const id = createId();
   const nextNumber = body.number || (db.prepare("SELECT MAX(CAST(number AS INTEGER)) AS max_number FROM quotes").get().max_number || 0) + 1;
-  const currency = get("SELECT id, name, symbol, iso4217 FROM currencies WHERE id = ?", [body.currencyId || "-99"]) || { id: body.currencyId || "-99", name: "US Dollars", symbol: "$", iso4217: "USD" };
+  const currency = (hasTable("currencies") ? get("SELECT id, name, symbol, iso4217 FROM currencies WHERE id = ?", [body.currencyId || "-99"]) : null) || { id: body.currencyId || "-99", name: "US Dollars", symbol: "$", iso4217: "USD" };
   const templateIds = Array.isArray(body.templateIds) ? body.templateIds.filter(Boolean) : [body.templateId].filter(Boolean);
-  const templateNames = templateIds.map((templateId) => get("SELECT name FROM quote_templates WHERE id = ?", [templateId])?.name || templateId);
+  const templateNames = templateIds.map((templateId) => (hasTable("quote_templates") ? get("SELECT name FROM quote_templates WHERE id = ?", [templateId])?.name : null) || templateId);
   const billing = body.billing || {};
   const shipping = body.shipping || {};
   const billingAddress = body.billingAddress || addressFromParts(billing);
@@ -821,6 +831,36 @@ app.get("/api/migration", (req, res) => {
   });
 });
 
-app.listen(port, "127.0.0.1", () => {
-  console.log(`BIOCRM API SQLite en http://127.0.0.1:${port}`);
+app.use("/api", (req, res) => {
+  res.status(404).json({ error: "Ruta API no encontrada" });
+});
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  if (req.path.startsWith("/api")) {
+    return res.status(500).json({ error: "Error interno del servidor" });
+  }
+  next(err);
+});
+
+const indexFile = path.join(distDir, "index.html");
+
+if (fs.existsSync(indexFile)) {
+  app.use(express.static(distDir, { index: false }));
+  app.get(/^(?!\/api(?:\/|$)).*/, (req, res) => {
+    res.sendFile(indexFile);
+  });
+} else {
+  app.get("/", (req, res) => {
+    res
+      .status(503)
+      .send("BIOCRM API activa. Ejecuta npm run build para publicar el frontend en dist/.");
+  });
+}
+
+app.listen(port, host, () => {
+  console.log(`BIOCRM API y web en http://${host}:${port}`);
+  if (!fs.existsSync(indexFile)) {
+    console.log("Frontend dist/ no encontrado; usa Vite en desarrollo o ejecuta npm run build.");
+  }
 });

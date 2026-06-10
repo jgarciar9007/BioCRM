@@ -33,12 +33,23 @@ import bioempakLogo from "./assets/bioempak-logo.png";
 const storedToken = () => localStorage.getItem("biocrm_token") || "";
 
 async function request(path, options = {}) {
-  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  const headers = { Accept: "application/json", "Content-Type": "application/json", ...(options.headers || {}) };
   const token = storedToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(path, { ...options, headers });
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  const contentType = response.headers.get("content-type") || "";
+  let data = {};
+  if (text) {
+    if (!contentType.includes("application/json")) {
+      throw new Error("La API no devolvio JSON. En WSL publica con npm run serve:lan o levanta la API junto al frontend.");
+    }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error("La API devolvio una respuesta JSON invalida.");
+    }
+  }
   if (!response.ok) throw new Error(data.error || `Error ${response.status}`);
   return data;
 }

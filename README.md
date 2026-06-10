@@ -4,6 +4,8 @@ Sistema local moderno para trabajar datos migrados desde SuiteCRM.
 
 ## Ejecutar
 
+Desarrollo local:
+
 ```bash
 npm install
 npm run import:suitecrm
@@ -12,6 +14,14 @@ npm run dev
 
 Frontend: http://127.0.0.1:5173  
 API: http://127.0.0.1:4177
+
+Publicacion local o WSL en red:
+
+```bash
+npm run serve:lan
+```
+
+App y API: http://localhost:5173
 
 Usuario inicial local:
 
