@@ -18,6 +18,7 @@ import {
   Mail,
   MapPin,
   Package,
+  Paperclip,
   Pencil,
   Phone,
   Plus,
@@ -78,16 +79,56 @@ const api = {
   quoteContext: (accountId) => request(`/api/quote-context?accountId=${accountId}`),
   updateQuote: (id, body) => request(`/api/quotes/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteQuote: (id) => request(`/api/quotes/${id}`, { method: "DELETE" }),
+  addQuoteAttachment: (quoteId, body) => request(`/api/quotes/${quoteId}/attachments`, { method: "POST", body: JSON.stringify(body) }),
+  quoteAttachment: (quoteId, attachmentId) => request(`/api/quotes/${quoteId}/attachments/${attachmentId}`),
+  deleteQuoteAttachment: (quoteId, attachmentId) => request(`/api/quotes/${quoteId}/attachments/${attachmentId}`, { method: "DELETE" }),
   catalogs: () => request("/api/catalogs"),
   company: () => request("/api/company"),
   updateCompany: (body) => request("/api/company", { method: "PUT", body: JSON.stringify(body) }),
-  migration: () => request("/api/migration")
+  migration: () => request("/api/migration"),
+  nomenclatorCategories: () => request("/api/nomenclators"),
+  nomenclatorItems: (category) => request(`/api/nomenclators/${category}`),
+  createNomenclatorItem: (category, value) => request(`/api/nomenclators/${category}`, { method: "POST", body: JSON.stringify({ value }) }),
+  updateNomenclatorItem: (category, id, value) => request(`/api/nomenclators/${category}/${id}`, { method: "PATCH", body: JSON.stringify({ value }) }),
+  deleteNomenclatorItem: (category, id) => request(`/api/nomenclators/${category}/${id}`, { method: "DELETE" }),
+  provinceItems: () => request("/api/nomenclators/province"),
+  createProvince: (country, name) => request("/api/nomenclators/province", { method: "POST", body: JSON.stringify({ country, name }) }),
+  updateProvince: (id, name) => request(`/api/nomenclators/province/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  deleteProvince: (id) => request(`/api/nomenclators/province/${id}`, { method: "DELETE" }),
+  roles: () => request("/api/roles"),
+  authUsers: () => request("/api/auth-users"),
+  createAuthUser: (body) => request("/api/auth-users", { method: "POST", body: JSON.stringify(body) }),
+  updateAuthUser: (id, body) => request(`/api/auth-users/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteAuthUser: (id) => request(`/api/auth-users/${id}`, { method: "DELETE" })
 };
 
 function withCurrent(list, current) {
   if (!current || list.includes(current)) return list;
   return [current, ...list];
 }
+
+function formatFileSize(bytes) {
+  const value = Number(bytes || 0);
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  if (value >= 1024) return `${Math.round(value / 1024)} KB`;
+  return `${value} B`;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function openDataUrl(dataUrl) {
+  const win = window.open(dataUrl, "_blank");
+  if (!win) window.alert("El navegador bloqueo la ventana. Habilita las ventanas emergentes para ver el adjunto.");
+}
+
+const maxAttachmentBytes = 8 * 1024 * 1024;
 
 const activityEntityByType = { Llamada: "calls", Reunion: "meetings", Tarea: "tasks" };
 const moneyFieldKeys = new Set(["amount", "price", "cost", "total"]);
@@ -143,7 +184,16 @@ const moduleLabels = {
   tasks: "Tareas"
 };
 
-const creatable = new Set(["accounts", "contacts", "opportunities", "quotes", "products", "cases", "leads", "notes", "calls", "meetings", "tasks", "accion", "diseno", "plan_de_accion", "cartera"]);
+const creatable = new Set(["accounts", "contacts", "opportunities", "quotes", "products", "cases", "leads", "notes", "calls", "meetings", "tasks", "accion", "diseno", "plan_de_accion"]);
+
+const TECNICO_COMERCIAL_MODULES = new Set(["home", "accounts", "opportunities", "quotes", "products"]);
+
+function roleCanWrite(role, entity) {
+  if (role === "admin") return true;
+  if (role === "lectura") return false;
+  if (role === "tecnico_comercial") return TECNICO_COMERCIAL_MODULES.has(entity);
+  return true;
+}
 
 function formatNumber(value) {
   return new Intl.NumberFormat("es-CO").format(Number(value || 0));
@@ -228,16 +278,23 @@ function Login({ onLogin, error, setError }) {
 }
 
 function Crm({ user, onLogout }) {
+  const role = user.role || "admin";
   const [summary, setSummary] = useState(null);
   const [modules, setModules] = useState([]);
   const [directory, setDirectory] = useState({ industries: [], users: [] });
   const [catalogs, setCatalogs] = useState({});
   const [activeView, setActiveView] = useState("home");
+  const [subEntity, setSubEntity] = useState(null);
   const [createFor, setCreateFor] = useState(null);
   const [selectedAccountId, setSelectedAccountId] = useState(null);
   const [quoteId, setQuoteId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [error, setError] = useState("");
+  const createEntity = subEntity || activeView;
+
+  useEffect(() => {
+    setSubEntity(null);
+  }, [activeView]);
 
   useEffect(() => {
     Promise.all([api.summary(), api.modules(), api.directory(), api.catalogs()])
@@ -304,8 +361,8 @@ function Crm({ user, onLogout }) {
             <h1>{modules.find((item) => item.id === activeView)?.label || "BIOCRM"}</h1>
           </div>
           <div className="action-row">
-            {creatable.has(activeView) ? (
-              <button className="primary-button" onClick={() => setCreateFor(activeView)}>
+            {creatable.has(createEntity) && roleCanWrite(role, createEntity) ? (
+              <button className="primary-button" onClick={() => setCreateFor(createEntity)}>
                 <Plus size={17} />
                 <span>Crear</span>
               </button>
@@ -325,6 +382,7 @@ function Crm({ user, onLogout }) {
           <AccountWorkspace
             directory={directory}
             catalogs={catalogs}
+            role={role}
             selectedId={selectedAccountId}
             onSelect={setSelectedAccountId}
             onCreate={setCreateFor}
@@ -334,9 +392,15 @@ function Crm({ user, onLogout }) {
         ) : activeView === "migration" ? (
           <MigrationView />
         ) : activeView === "company" ? (
-          <CompanySettings />
+          <CompanySettings role={role} />
+        ) : activeView === "nomenclators" ? (
+          <NomencladoresView />
+        ) : activeView === "users" ? (
+          <UsersView currentUserId={user.id} />
+        ) : activeView === "accion" ? (
+          <AccionesView catalogs={catalogs} role={role} onQuote={setQuoteId} refreshKey={refreshKey} onSubEntityChange={setSubEntity} />
         ) : (
-          <EntityView entity={activeView} module={modules.find((item) => item.id === activeView)} catalogs={catalogs} onQuote={setQuoteId} refreshKey={refreshKey} />
+          <EntityView entity={activeView} module={modules.find((item) => item.id === activeView)} catalogs={catalogs} role={role} onQuote={setQuoteId} refreshKey={refreshKey} />
         )}
       </section>
 
@@ -354,7 +418,7 @@ function Crm({ user, onLogout }) {
           }}
         />
       ) : null}
-      {quoteId ? <QuoteDrawer id={quoteId} onClose={() => setQuoteId(null)} onChanged={() => setRefreshKey((key) => key + 1)} /> : null}
+      {quoteId ? <QuoteDrawer id={quoteId} onClose={() => setQuoteId(null)} onChanged={() => setRefreshKey((key) => key + 1)} catalogs={catalogs} role={role} /> : null}
     </main>
   );
 }
@@ -445,7 +509,7 @@ function HomeView({ summary, refreshKey, onQuote, onOpenAccounts }) {
   );
 }
 
-function AccountWorkspace({ directory, catalogs, selectedId, onSelect, onCreate, onQuote, refreshKey }) {
+function AccountWorkspace({ directory, catalogs, role, selectedId, onSelect, onCreate, onQuote, refreshKey }) {
   const [accounts, setAccounts] = useState({ items: [], total: 0 });
   const [filters, setFilters] = useState({ search: "", industry: "", pageSize: 60 });
   const [selected, setSelected] = useState(null);
@@ -480,9 +544,11 @@ function AccountWorkspace({ directory, catalogs, selectedId, onSelect, onCreate,
         </div>
         <div className="list-heading">
           <strong>{formatNumber(accounts.total)} cuentas</strong>
-          <button className="mini-action" onClick={() => onCreate("accounts")}>
-            <Plus size={15} /> Nuevo
-          </button>
+          {roleCanWrite(role, "accounts") ? (
+            <button className="mini-action" onClick={() => onCreate("accounts")}>
+              <Plus size={15} /> Nuevo
+            </button>
+          ) : null}
         </div>
         <div className="account-list">
           {accounts.items.map((account) => (
@@ -503,6 +569,7 @@ function AccountWorkspace({ directory, catalogs, selectedId, onSelect, onCreate,
             selected={selected}
             directory={directory}
             catalogs={catalogs}
+            role={role}
             onCreate={onCreate}
             onQuote={onQuote}
             onOpenRecord={setRecordView}
@@ -522,6 +589,7 @@ function AccountWorkspace({ directory, catalogs, selectedId, onSelect, onCreate,
           entity={recordView.entity}
           record={recordView.record}
           catalogs={catalogs}
+          role={role}
           onClose={() => setRecordView(null)}
           onChanged={() => {
             setRecordView(null);
@@ -533,11 +601,13 @@ function AccountWorkspace({ directory, catalogs, selectedId, onSelect, onCreate,
   );
 }
 
-function AccountDetail({ selected, directory, catalogs, onCreate, onQuote, onOpenRecord, onDeleted }) {
+function AccountDetail({ selected, directory, catalogs, role, onCreate, onQuote, onOpenRecord, onDeleted }) {
   const { account, related } = selected;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(account);
   const [relatedView, setRelatedView] = useState(null);
+  const canWrite = roleCanWrite(role, "accounts");
+  const provinceOptions = withCurrent(catalogs.provincesByCountry?.[draft.country] || [], account.state);
 
   useEffect(() => {
     setDraft(account);
@@ -564,20 +634,26 @@ function AccountDetail({ selected, directory, catalogs, onCreate, onQuote, onOpe
           <p>{[account.industry, account.type, account.assignedUser].filter(Boolean).join(" · ")}</p>
         </div>
         <div className="action-row">
-          <button className="primary-button" onClick={() => onCreate("quotes")}>
-            <FileText size={17} />
-            <span>Cotizar</span>
-          </button>
-          <button className="icon-button" onClick={() => (editing ? save() : setEditing(true))} title={editing ? "Guardar" : "Editar"}>
-            {editing ? <Save size={18} /> : <Pencil size={18} />}
-          </button>
-          <button className="icon-button" onClick={remove} title="Eliminar cliente">
-            <Trash2 size={18} />
-          </button>
+          {roleCanWrite(role, "quotes") ? (
+            <button className="primary-button" onClick={() => onCreate("quotes")}>
+              <FileText size={17} />
+              <span>Cotizar</span>
+            </button>
+          ) : null}
+          {canWrite ? (
+            <>
+              <button className="icon-button" onClick={() => (editing ? save() : setEditing(true))} title={editing ? "Guardar" : "Editar"}>
+                {editing ? <Save size={18} /> : <Pencil size={18} />}
+              </button>
+              <button className="icon-button" onClick={remove} title="Eliminar cliente">
+                <Trash2 size={18} />
+              </button>
+            </>
+          ) : null}
         </div>
       </div>
       <div className="quick-create">
-        {["contacts", "quotes", "calls", "meetings", "tasks", "notes", "cases"].map((item) => (
+        {["contacts", "quotes", "calls", "meetings", "tasks", "notes", "cases"].filter((item) => roleCanWrite(role, item)).map((item) => (
           <button key={item} onClick={() => onCreate(item)}>
             <Plus size={15} />
             <span>{moduleLabels[item]}</span>
@@ -590,7 +666,7 @@ function AccountDetail({ selected, directory, catalogs, onCreate, onQuote, onOpe
         <SelectInfo icon={Building2} label="Tipo" value={account.type} editing={editing} field="type" draft={draft} setDraft={setDraft} options={withCurrent(catalogs.accountTypes || [], account.type)} />
         <SelectInfo icon={Package} label="Industria" value={account.industry} editing={editing} field="industry" draft={draft} setDraft={setDraft} options={withCurrent(directory.industries || [], account.industry)} />
         <Info icon={MapPin} label="Ciudad" value={account.city} editing={editing} field="city" draft={draft} setDraft={setDraft} />
-        <Info icon={MapPin} label="Departamento" value={account.state} editing={editing} field="state" draft={draft} setDraft={setDraft} />
+        <SelectInfo icon={MapPin} label="Departamento/Estado" value={account.state} editing={editing} field="state" draft={draft} setDraft={setDraft} options={provinceOptions} />
         <SelectInfo icon={MapPin} label="Pais" value={account.country} editing={editing} field="country" draft={draft} setDraft={setDraft} options={withCurrent(catalogs.countries || [], account.country)} />
       </div>
       {editing ? (
@@ -617,7 +693,6 @@ function AccountDetail({ selected, directory, catalogs, onCreate, onQuote, onOpe
           { key: "emails", title: "Correos", icon: Mail, items: related.emails || [], create: "emails" },
           { key: "projects", title: "Proyectos", icon: ClipboardList, items: related.projects || [], create: "projects" },
           { key: "disenos", title: "Disenos", icon: Pencil, items: related.disenos || [], create: "diseno" },
-          { key: "cartera", title: "Cartera", icon: BadgeDollarSign, items: related.cartera || [], create: "cartera" },
           { key: "acciones", title: "Acciones", icon: Activity, items: related.acciones || [], create: "accion" },
           { key: "planesAccion", title: "Planes de accion", icon: ClipboardList, items: related.planesAccion || [], create: "plan_de_accion" }
         ].map((card) => (
@@ -633,6 +708,7 @@ function AccountDetail({ selected, directory, catalogs, onCreate, onQuote, onOpe
         <RelatedDrawer
           account={account}
           relation={relatedView}
+          role={role}
           onClose={() => setRelatedView(null)}
           onCreate={onCreate}
           onQuote={onQuote}
@@ -643,7 +719,7 @@ function AccountDetail({ selected, directory, catalogs, onCreate, onQuote, onOpe
   );
 }
 
-function EntityView({ entity, module, catalogs, onQuote, refreshKey }) {
+function EntityView({ entity, module, catalogs, role, onQuote, refreshKey }) {
   const [data, setData] = useState({ items: [], total: 0 });
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState("list");
@@ -702,6 +778,7 @@ function EntityView({ entity, module, catalogs, onQuote, refreshKey }) {
           entity={recordView.entity}
           record={recordView.record}
           catalogs={catalogs}
+          role={role}
           onClose={() => setRecordView(null)}
           onChanged={() => {
             setRecordView(null);
@@ -764,14 +841,13 @@ const relationEntityMap = {
   notes: "notes",
   cases: "cases",
   disenos: "diseno",
-  cartera: "cartera",
   acciones: "accion",
   planesAccion: "plan_de_accion"
 };
 
-function RelatedDrawer({ account, relation, onClose, onCreate, onQuote, onOpenRecord }) {
+function RelatedDrawer({ account, relation, role, onClose, onCreate, onQuote, onOpenRecord }) {
   const items = relation.items || [];
-  const canCreate = creatable.has(relation.create);
+  const canCreate = creatable.has(relation.create) && roleCanWrite(role, relation.create);
 
   function handleClick(item) {
     if (relation.key === "quotes") return onQuote(item.id);
@@ -787,7 +863,7 @@ function RelatedDrawer({ account, relation, onClose, onCreate, onQuote, onOpenRe
     if (relation.key === "cases") return `${item.status || "Sin estado"} - ${item.priority || "Sin prioridad"}`;
     if (relation.key === "invoices") return `${item.status || "Sin estado"} - ${formatMoney(item.total)}`;
     if (relation.key === "emails") return [item.legacy?.addresses?.from?.[0], item.status, item.type, shortDate(item.startDate)].filter(Boolean).join(" - ");
-    if (["disenos", "cartera", "acciones", "planesAccion", "contracts"].includes(relation.key)) {
+    if (["disenos", "acciones", "planesAccion"].includes(relation.key)) {
       return [item.status, item.type, Number(item.total || 0) ? formatMoney(item.total) : null, shortDate(item.startDate || item.endDate)].filter(Boolean).join(" - ");
     }
     return [item.status, item.type, item.priority, shortDate(item.createdAt || item.updatedAt || item.startDate || item.endDate)].filter(Boolean).join(" - ");
@@ -802,7 +878,7 @@ function RelatedDrawer({ account, relation, onClose, onCreate, onQuote, onOpenRe
           <p>{formatNumber(items.length)} registros relacionados</p>
         </div>
         <div className="action-row">
-          {relation.key === "activities" ? (
+          {relation.key === "activities" && roleCanWrite(role, "tasks") ? (
             <>
               <button className="primary-button" onClick={() => onCreate("calls")}><Plus size={17} /><span>Llamada</span></button>
               <button className="primary-button" onClick={() => onCreate("meetings")}><Plus size={17} /><span>Reunion</span></button>
@@ -848,13 +924,17 @@ function draftFromQuote(detail) {
     deliveryTime: detail.quote.deliveryTime || "",
     expiration: detail.quote.expiration ? String(detail.quote.expiration).slice(0, 10) : "",
     observations: detail.quote.observations || "",
-    lines: detail.lines.map((line) => ({
-      productId: line.productId || null,
-      name: line.name || line.catalogProductName || "",
-      quantity: line.quantity,
-      unitPrice: line.unitPrice,
-      vatAmount: line.vatAmount
-    }))
+    lines: detail.lines.map((line) => {
+      const base = Number(line.quantity || 0) * Number(line.unitPrice || 0);
+      const derivedRate = base > 0 ? Math.round((Number(line.vatAmount || 0) / base) * 100) : 0;
+      return {
+        productId: line.productId || null,
+        name: line.name || line.catalogProductName || "",
+        quantity: line.quantity,
+        unitPrice: line.unitPrice,
+        vatRate: line.vatRate ?? derivedRate
+      };
+    })
   };
 }
 
@@ -967,12 +1047,14 @@ function buildQuotePrintHtml({ quote, lines, company }) {
 </html>`;
 }
 
-function QuoteDrawer({ id, onClose, onChanged }) {
+function QuoteDrawer({ id, onClose, onChanged, catalogs, role }) {
+  const canWrite = roleCanWrite(role, "quotes");
   const [detail, setDetail] = useState(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const ivaRates = catalogs?.ivaRates?.length ? catalogs.ivaRates : [0, 5, 19];
 
   useEffect(() => {
     api.quote(id).then((data) => {
@@ -993,11 +1075,47 @@ function QuoteDrawer({ id, onClose, onChanged }) {
   }
 
   function addLine() {
-    setDraft((current) => ({ ...current, lines: [...current.lines, { name: "", quantity: 1, unitPrice: 0, vatAmount: 0 }] }));
+    setDraft((current) => ({ ...current, lines: [...current.lines, { name: "", quantity: 1, unitPrice: 0, vatRate: 19 }] }));
   }
 
   function removeLine(index) {
     setDraft((current) => ({ ...current, lines: current.lines.filter((_, i) => i !== index) }));
+  }
+
+  async function refreshDetail() {
+    const refreshed = await api.quote(id);
+    setDetail(refreshed);
+    return refreshed;
+  }
+
+  async function uploadAttachments(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    setError("");
+    for (const file of files) {
+      if (file.size > maxAttachmentBytes) {
+        window.alert(`"${file.name}" supera el tamano maximo permitido (8 MB).`);
+        continue;
+      }
+      try {
+        const data = await readFileAsDataUrl(file);
+        await api.addQuoteAttachment(id, { name: file.name, mimeType: file.type, data });
+      } catch (err) {
+        setError(err.message);
+      }
+    }
+    await refreshDetail();
+  }
+
+  async function removeAttachment(attachmentId) {
+    if (!window.confirm("¿Eliminar este adjunto?")) return;
+    await api.deleteQuoteAttachment(id, attachmentId);
+    await refreshDetail();
+  }
+
+  async function viewAttachment(attachmentId) {
+    const full = await api.quoteAttachment(id, attachmentId);
+    openDataUrl(full.data);
   }
 
   async function save() {
@@ -1045,10 +1163,10 @@ function QuoteDrawer({ id, onClose, onChanged }) {
 
   const preview = editing
     ? draft.lines.reduce(
-        (acc, line) => ({
-          subtotal: acc.subtotal + Number(line.quantity || 0) * Number(line.unitPrice || 0),
-          tax: acc.tax + Number(line.vatAmount || 0)
-        }),
+        (acc, line) => {
+          const base = Number(line.quantity || 0) * Number(line.unitPrice || 0);
+          return { subtotal: acc.subtotal + base, tax: acc.tax + base * (Number(line.vatRate || 0) / 100) };
+        },
         { subtotal: 0, tax: 0 }
       )
     : null;
@@ -1076,12 +1194,16 @@ function QuoteDrawer({ id, onClose, onChanged }) {
               <Printer size={18} />
             </button>
           ) : null}
-          <button className="icon-button" onClick={() => (editing ? save() : setEditing(true))} title={editing ? "Guardar" : "Editar"} disabled={saving}>
-            {editing ? <Save size={18} /> : <Pencil size={18} />}
-          </button>
-          <button className="icon-button" onClick={remove} title="Eliminar">
-            <Trash2 size={18} />
-          </button>
+          {canWrite ? (
+            <>
+              <button className="icon-button" onClick={() => (editing ? save() : setEditing(true))} title={editing ? "Guardar" : "Editar"} disabled={saving}>
+                {editing ? <Save size={18} /> : <Pencil size={18} />}
+              </button>
+              <button className="icon-button" onClick={remove} title="Eliminar">
+                <Trash2 size={18} />
+              </button>
+            </>
+          ) : null}
           <button className="icon-button" onClick={onClose}><X size={18} /></button>
         </div>
       </div>
@@ -1124,12 +1246,23 @@ function QuoteDrawer({ id, onClose, onChanged }) {
         </div>
         {editing ? (
           <div className="quote-lines-editor">
+            <div className="line-editor line-editor-head">
+              <span>Producto</span>
+              <span>Cantidad</span>
+              <span>Precio unitario</span>
+              <span>IVA</span>
+              <span>Importe</span>
+              <span></span>
+            </div>
             {draft.lines.map((line, index) => (
               <div className="line-editor" key={index}>
-                <input placeholder="Producto" value={line.name} onChange={(event) => updateLine(index, "name", event.target.value)} required />
-                <input type="number" min="0" step="0.01" placeholder="Cantidad" value={line.quantity} onChange={(event) => updateLine(index, "quantity", event.target.value)} />
-                <input type="number" min="0" step="0.01" placeholder="Unitario" value={line.unitPrice} onChange={(event) => updateLine(index, "unitPrice", event.target.value)} />
-                <input type="number" min="0" step="0.01" placeholder="IVA" value={line.vatAmount} onChange={(event) => updateLine(index, "vatAmount", event.target.value)} />
+                <input placeholder="Nombre del producto" value={line.name} onChange={(event) => updateLine(index, "name", event.target.value)} required />
+                <input type="number" min="0" step="0.01" value={line.quantity} onChange={(event) => updateLine(index, "quantity", event.target.value)} />
+                <input type="number" min="0" step="0.01" value={line.unitPrice} onChange={(event) => updateLine(index, "unitPrice", event.target.value)} />
+                <select value={line.vatRate ?? 19} onChange={(event) => updateLine(index, "vatRate", event.target.value)}>
+                  {withCurrent(ivaRates, line.vatRate).map((rate) => <option key={rate} value={rate}>{rate}%</option>)}
+                </select>
+                <span className="line-amount">{formatMoney(lineAmount(line))}</span>
                 <button type="button" className="icon-button" onClick={() => removeLine(index)} title="Quitar linea" disabled={draft.lines.length <= 1}><X size={16} /></button>
               </div>
             ))}
@@ -1159,6 +1292,30 @@ function QuoteDrawer({ id, onClose, onChanged }) {
               ))}
             </tbody>
           </table>
+        )}
+      </div>
+      <div className="table-block">
+        <div className="panel-title">
+          <strong>Adjuntos</strong>
+          {canWrite ? (
+            <label className="mini-action file-picker">
+              <Paperclip size={15} /> Adjuntar
+              <input type="file" multiple onChange={uploadAttachments} />
+            </label>
+          ) : null}
+        </div>
+        {detail.attachments.length ? (
+          <div className="mini-list">
+            {detail.attachments.map((file) => (
+              <div className="attachment-row" key={file.id}>
+                <button type="button" className="attachment-link" onClick={() => viewAttachment(file.id)}>{file.name}</button>
+                <span className="attachment-size">{formatFileSize(file.size)}</span>
+                {canWrite ? <button type="button" className="icon-button" onClick={() => removeAttachment(file.id)} title="Eliminar adjunto"><Trash2 size={14} /></button> : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <span className="empty-small">Sin adjuntos</span>
         )}
       </div>
       {!editing ? (
@@ -1194,8 +1351,6 @@ function recordFieldsFor(entity, catalogs) {
       return [["title", "Asunto"], ["status", "Estado", "select", taskStatuses], ["priority", "Prioridad", "select", taskPriorities], ["dateStart", "Inicio", "datetime-local"], ["dueDate", "Vence", "date"], ["description", "Descripcion", "textarea"]];
     case "diseno":
       return [["name", "Nombre"], ["status", "Estado", "select", c.disenoStatuses || []], ["type", "Tipo"], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"]];
-    case "cartera":
-      return [["name", "Nombre"], ["status", "Estado", "select", c.carteraStatuses || []], ["type", "Plazo (dias)", "select", c.carteraTypes || []], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"], ["total", "Total", "number"]];
     default:
       return [["name", "Nombre"], ["status", "Estado"], ["type", "Tipo"], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"], ["total", "Total", "number"]];
   }
@@ -1208,7 +1363,8 @@ function formatFieldValue(key, value, type) {
   return String(value);
 }
 
-function RecordDrawer({ entity, record, catalogs, onClose, onChanged }) {
+function RecordDrawer({ entity, record, catalogs, role, onClose, onChanged }) {
+  const canWrite = roleCanWrite(role, entity);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(record);
   const [saving, setSaving] = useState(false);
@@ -1261,12 +1417,16 @@ function RecordDrawer({ entity, record, catalogs, onClose, onChanged }) {
           <p>{moduleLabels[entity] || entity}</p>
         </div>
         <div className="action-row">
-          <button className="icon-button" onClick={() => (editing ? save() : setEditing(true))} title={editing ? "Guardar" : "Editar"} disabled={saving}>
-            {editing ? <Save size={18} /> : <Pencil size={18} />}
-          </button>
-          <button className="icon-button" onClick={remove} title="Eliminar">
-            <Trash2 size={18} />
-          </button>
+          {canWrite ? (
+            <>
+              <button className="icon-button" onClick={() => (editing ? save() : setEditing(true))} title={editing ? "Guardar" : "Editar"} disabled={saving}>
+                {editing ? <Save size={18} /> : <Pencil size={18} />}
+              </button>
+              <button className="icon-button" onClick={remove} title="Eliminar">
+                <Trash2 size={18} />
+              </button>
+            </>
+          ) : null}
           <button className="icon-button" onClick={onClose}><X size={18} /></button>
         </div>
       </div>
@@ -1295,7 +1455,7 @@ function RecordDrawer({ entity, record, catalogs, onClose, onChanged }) {
 }
 
 function CreateModal({ entity, accountId, directory, catalogs, onClose, onCreated }) {
-  const [form, setForm] = useState({ accountId, country: "Colombia", lines: [{ name: "", quantity: 1, unitPrice: 0, vatAmount: 0 }] });
+  const [form, setForm] = useState({ accountId, country: "Colombia", lines: [{ name: "", quantity: 1, unitPrice: 0, vatRate: 19 }], attachments: [] });
   const [accountName, setAccountName] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -1327,7 +1487,13 @@ function CreateModal({ entity, accountId, directory, catalogs, onClose, onCreate
     setSaving(true);
     setError("");
     try {
-      const created = entity === "accounts" ? await api.createAccount(form) : await api.createEntity(entity, form);
+      const { attachments, ...payload } = form;
+      const created = entity === "accounts" ? await api.createAccount(payload) : await api.createEntity(entity, payload);
+      if (entity === "quotes" && attachments?.length && created.quote?.id) {
+        for (const file of attachments) {
+          await api.addQuoteAttachment(created.quote.id, file).catch(() => {});
+        }
+      }
       onCreated(created);
     } catch (err) {
       setError(err.message);
@@ -1344,7 +1510,7 @@ function CreateModal({ entity, accountId, directory, catalogs, onClose, onCreate
           <button type="button" className="icon-button" onClick={onClose}><X size={18} /></button>
         </div>
         {entity === "quotes" ? (
-          <QuoteForm form={form} setForm={setForm} update={update} accountName={accountName} onPickAccount={pickAccount} />
+          <QuoteForm form={form} setForm={setForm} update={update} accountName={accountName} onPickAccount={pickAccount} catalogs={catalogs} />
         ) : (
           <EntityForm entity={entity} form={form} update={update} accountName={accountName} onPickAccount={pickAccount} directory={directory} catalogs={catalogs} />
         )}
@@ -1441,6 +1607,7 @@ function EntityForm({ entity, form, update, accountName, onPickAccount, director
         <label>Email<input type="email" value={form.email || ""} onChange={(event) => update("email", event.target.value)} /></label>
         <label>Ciudad<input value={form.city || ""} onChange={(event) => update("city", event.target.value)} /></label>
         <label>Pais<select value={form.country || "Colombia"} onChange={(event) => update("country", event.target.value)}>{withCurrent(catalogs.countries || [], form.country).map((country) => <option key={country}>{country}</option>)}</select></label>
+        <label>Departamento/Estado<select value={form.state || ""} onChange={(event) => update("state", event.target.value)}><option value="">Selecciona</option>{withCurrent(catalogs.provincesByCountry?.[form.country || "Colombia"] || [], form.state).map((province) => <option key={province}>{province}</option>)}</select></label>
         <label className="wide">Direccion<textarea value={form.address || ""} onChange={(event) => update("address", event.target.value)} /></label>
         <label className="wide">Descripcion<textarea value={form.description || ""} onChange={(event) => update("description", event.target.value)} /></label>
       </div>
@@ -1551,20 +1718,6 @@ function EntityForm({ entity, form, update, accountName, onPickAccount, director
     );
   }
 
-  if (entity === "cartera") {
-    return (
-      <div className="form-grid">
-        {client}
-        <label>Nombre<input value={form.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
-        <label>Estado<select value={form.status || catalogs.carteraStatuses?.[0] || ""} onChange={(event) => update("status", event.target.value)}>{withCurrent(catalogs.carteraStatuses || [], form.status).map((status) => <option key={status}>{status}</option>)}</select></label>
-        <label>Plazo (dias)<select value={form.type || ""} onChange={(event) => update("type", event.target.value)}><option value="">Selecciona plazo</option>{withCurrent(catalogs.carteraTypes || [], form.type).map((type) => <option key={type}>{type}</option>)}</select></label>
-        <label>Inicio<input type="date" value={form.startDate || ""} onChange={(event) => update("startDate", event.target.value)} /></label>
-        <label>Fin<input type="date" value={form.endDate || ""} onChange={(event) => update("endDate", event.target.value)} /></label>
-        <label>Total<input type="number" min="0" step="0.01" value={form.total || ""} onChange={(event) => update("total", event.target.value)} /></label>
-      </div>
-    );
-  }
-
   return (
     <div className="form-grid">
       {client}
@@ -1578,8 +1731,14 @@ function EntityForm({ entity, form, update, accountName, onPickAccount, director
   );
 }
 
-function QuoteForm({ form, setForm, update, accountName, onPickAccount }) {
+function lineAmount(line) {
+  const base = Number(line.quantity || 0) * Number(line.unitPrice || 0);
+  return base + base * (Number(line.vatRate || 0) / 100);
+}
+
+function QuoteForm({ form, setForm, update, accountName, onPickAccount, catalogs }) {
   const [context, setContext] = useState(null);
+  const ivaRates = catalogs?.ivaRates?.length ? catalogs.ivaRates : [0, 5, 19];
 
   useEffect(() => {
     if (!form.accountId) {
@@ -1605,11 +1764,36 @@ function QuoteForm({ form, setForm, update, accountName, onPickAccount }) {
     setForm({ ...form, lines });
   }
   function addLine() {
-    setForm({ ...form, lines: [...form.lines, { name: "", quantity: 1, unitPrice: 0, vatAmount: 0 }] });
+    setForm({ ...form, lines: [...form.lines, { name: "", quantity: 1, unitPrice: 0, vatRate: 19 }] });
   }
   function removeLine(index) {
     setForm({ ...form, lines: form.lines.filter((_, i) => i !== index) });
   }
+
+  async function onFilesSelected(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    for (const file of files) {
+      if (file.size > maxAttachmentBytes) {
+        window.alert(`"${file.name}" supera el tamano maximo permitido (8 MB).`);
+        continue;
+      }
+      const data = await readFileAsDataUrl(file);
+      setForm((current) => ({ ...current, attachments: [...(current.attachments || []), { name: file.name, mimeType: file.type, data, size: file.size }] }));
+    }
+  }
+  function removeAttachment(index) {
+    setForm((current) => ({ ...current, attachments: current.attachments.filter((_, i) => i !== index) }));
+  }
+
+  const totals = form.lines.reduce(
+    (acc, line) => {
+      const base = Number(line.quantity || 0) * Number(line.unitPrice || 0);
+      return { subtotal: acc.subtotal + base, tax: acc.tax + base * (Number(line.vatRate || 0) / 100) };
+    },
+    { subtotal: 0, tax: 0 }
+  );
+
   return (
     <div className="form-grid">
       <ClientField entity="quotes" form={form} accountName={accountName} onPickAccount={onPickAccount} />
@@ -1625,15 +1809,53 @@ function QuoteForm({ form, setForm, update, accountName, onPickAccount }) {
             <Plus size={15} /> Linea
           </button>
         </div>
+        <div className="line-editor line-editor-head">
+          <span>Producto</span>
+          <span>Cantidad</span>
+          <span>Precio unitario</span>
+          <span>IVA</span>
+          <span>Importe</span>
+          <span></span>
+        </div>
         {form.lines.map((line, index) => (
           <div className="line-editor" key={index}>
-            <input placeholder="Producto" value={line.name} onChange={(event) => updateLine(index, "name", event.target.value)} required />
-            <input type="number" min="0" step="0.01" placeholder="Cantidad" value={line.quantity} onChange={(event) => updateLine(index, "quantity", event.target.value)} />
-            <input type="number" min="0" step="0.01" placeholder="Unitario" value={line.unitPrice} onChange={(event) => updateLine(index, "unitPrice", event.target.value)} />
-            <input type="number" min="0" step="0.01" placeholder="IVA" value={line.vatAmount} onChange={(event) => updateLine(index, "vatAmount", event.target.value)} />
+            <input placeholder="Nombre del producto" value={line.name} onChange={(event) => updateLine(index, "name", event.target.value)} required />
+            <input type="number" min="0" step="0.01" value={line.quantity} onChange={(event) => updateLine(index, "quantity", event.target.value)} />
+            <input type="number" min="0" step="0.01" value={line.unitPrice} onChange={(event) => updateLine(index, "unitPrice", event.target.value)} />
+            <select value={line.vatRate ?? 19} onChange={(event) => updateLine(index, "vatRate", event.target.value)}>
+              {withCurrent(ivaRates, line.vatRate).map((rate) => <option key={rate} value={rate}>{rate}%</option>)}
+            </select>
+            <span className="line-amount">{formatMoney(lineAmount(line))}</span>
             <button type="button" className="icon-button" onClick={() => removeLine(index)} title="Quitar linea" disabled={form.lines.length <= 1}><X size={16} /></button>
           </div>
         ))}
+        <div className="line-totals">
+          <span>Subtotal <strong>{formatMoney(totals.subtotal)}</strong></span>
+          <span>IVA <strong>{formatMoney(totals.tax)}</strong></span>
+          <span>Total <strong>{formatMoney(totals.subtotal + totals.tax)}</strong></span>
+        </div>
+      </div>
+      <div className="wide quote-lines-editor">
+        <div className="panel-title">
+          <strong>Adjuntos</strong>
+          <label className="mini-action file-picker">
+            <Paperclip size={15} /> Adjuntar
+            <input type="file" multiple onChange={onFilesSelected} />
+          </label>
+        </div>
+        {(form.attachments || []).length ? (
+          <div className="mini-list">
+            {form.attachments.map((file, index) => (
+              <div className="attachment-row" key={index}>
+                <span>{file.name}</span>
+                <span className="attachment-size">{formatFileSize(file.size)}</span>
+                <button type="button" className="icon-button" onClick={() => removeAttachment(index)} title="Quitar adjunto"><X size={16} /></button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <span className="empty-small">Sin adjuntos. Puedes agregar fichas tecnicas, imagenes u ordenes de compra.</span>
+        )}
       </div>
     </div>
   );
@@ -1687,7 +1909,28 @@ function MiniRow({ title, meta }) {
   );
 }
 
-function CompanySettings() {
+function AccionesView({ catalogs, role, onQuote, refreshKey, onSubEntityChange }) {
+  const [tab, setTab] = useState("accion");
+
+  useEffect(() => {
+    onSubEntityChange?.(tab);
+  }, [tab]);
+
+  const module = tab === "accion" ? { id: "accion", label: "Acciones", group: "Personalizados" } : { id: "plan_de_accion", label: "Planes de accion", group: "Personalizados" };
+
+  return (
+    <div>
+      <div className="tab-switch">
+        <button className={tab === "accion" ? "tab-button active" : "tab-button"} onClick={() => setTab("accion")}>Acciones</button>
+        <button className={tab === "plan_de_accion" ? "tab-button active" : "tab-button"} onClick={() => setTab("plan_de_accion")}>Planes de accion</button>
+      </div>
+      <EntityView entity={tab} module={module} catalogs={catalogs} role={role} onQuote={onQuote} refreshKey={refreshKey} />
+    </div>
+  );
+}
+
+function CompanySettings({ role }) {
+  const canWrite = !role || role === "admin";
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -1734,7 +1977,7 @@ function CompanySettings() {
           <strong>Datos de la empresa emisora</strong>
           <span>Se usan para imprimir las cotizaciones</span>
         </div>
-        <div className="form-grid">
+        <fieldset className="form-grid" disabled={!canWrite}>
           <label>Nombre<input value={draft.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
           <label>NIT / Identificacion fiscal<input value={draft.taxId || ""} onChange={(event) => update("taxId", event.target.value)} /></label>
           <label>Telefono<input value={draft.phone || ""} onChange={(event) => update("phone", event.target.value)} /></label>
@@ -1750,14 +1993,360 @@ function CompanySettings() {
               <button type="button" className="mini-action" onClick={() => update("logo", "")}>Quitar logo</button>
             </div>
           ) : null}
-        </div>
+        </fieldset>
         {error ? <div className="alert">{error}</div> : null}
-        <div className="modal-actions">
-          {saved ? <span className="form-note">Datos guardados</span> : <span />}
-          <button className="primary-button" disabled={saving}><Save size={17} /><span>{saving ? "Guardando" : "Guardar"}</span></button>
-        </div>
+        {canWrite ? (
+          <div className="modal-actions">
+            {saved ? <span className="form-note">Datos guardados</span> : <span />}
+            <button className="primary-button" disabled={saving}><Save size={17} /><span>{saving ? "Guardando" : "Guardar"}</span></button>
+          </div>
+        ) : null}
       </form>
     </section>
+  );
+}
+
+function NomencladoresView() {
+  const [categories, setCategories] = useState([]);
+  const [activeCategory, setActiveCategory] = useState(null);
+
+  useEffect(() => {
+    api.nomenclatorCategories().then((data) => {
+      setCategories(data.categories);
+      setActiveCategory((current) => current || data.categories[0]?.id || null);
+    });
+  }, []);
+
+  return (
+    <div>
+      <div className="tab-switch">
+        {categories.map((category) => (
+          <button
+            key={category.id}
+            className={activeCategory === category.id ? "tab-button active" : "tab-button"}
+            onClick={() => setActiveCategory(category.id)}
+          >
+            {category.label}
+          </button>
+        ))}
+      </div>
+      {activeCategory === "province" ? (
+        <ProvinceNomenclatorTab />
+      ) : activeCategory ? (
+        <SimpleNomenclatorTab key={activeCategory} category={activeCategory} label={categories.find((item) => item.id === activeCategory)?.label} />
+      ) : null}
+    </div>
+  );
+}
+
+function SimpleNomenclatorTab({ category, label }) {
+  const [items, setItems] = useState([]);
+  const [newValue, setNewValue] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editValue, setEditValue] = useState("");
+  const [error, setError] = useState("");
+
+  function load() {
+    api.nomenclatorItems(category).then((data) => setItems(data.items));
+  }
+
+  useEffect(load, [category]);
+
+  async function addItem(event) {
+    event.preventDefault();
+    if (!newValue.trim()) return;
+    setError("");
+    try {
+      await api.createNomenclatorItem(category, newValue.trim());
+      setNewValue("");
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function saveEdit(id) {
+    if (!editValue.trim()) return;
+    try {
+      await api.updateNomenclatorItem(category, id, editValue.trim());
+      setEditingId(null);
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function removeItem(id) {
+    if (!window.confirm("¿Eliminar este valor del nomenclador?")) return;
+    try {
+      await api.deleteNomenclatorItem(category, id);
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  return (
+    <div className="table-block">
+      <div className="panel-title">
+        <strong>{label}</strong>
+        <span>{formatNumber(items.length)} valores</span>
+      </div>
+      {error ? <div className="alert">{error}</div> : null}
+      <form className="nomenclator-add-row" onSubmit={addItem}>
+        <input placeholder="Nuevo valor" value={newValue} onChange={(event) => setNewValue(event.target.value)} />
+        <button className="primary-button" type="submit"><Plus size={16} /><span>Agregar</span></button>
+      </form>
+      <div className="mini-list">
+        {items.map((item) => (
+          <div className="nomenclator-row" key={item.id}>
+            {editingId === item.id ? (
+              <input value={editValue} onChange={(event) => setEditValue(event.target.value)} autoFocus />
+            ) : (
+              <span>{item.value}</span>
+            )}
+            <div className="action-row">
+              {editingId === item.id ? (
+                <button type="button" className="icon-button" onClick={() => saveEdit(item.id)} title="Guardar"><Save size={15} /></button>
+              ) : (
+                <button type="button" className="icon-button" onClick={() => { setEditingId(item.id); setEditValue(item.value); }} title="Editar"><Pencil size={15} /></button>
+              )}
+              <button type="button" className="icon-button" onClick={() => removeItem(item.id)} title="Eliminar"><Trash2 size={15} /></button>
+            </div>
+          </div>
+        ))}
+        {!items.length ? <span className="empty-small">Sin valores</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function ProvinceNomenclatorTab() {
+  const [items, setItems] = useState([]);
+  const [countries, setCountries] = useState([]);
+  const [country, setCountry] = useState("");
+  const [newValue, setNewValue] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editValue, setEditValue] = useState("");
+  const [error, setError] = useState("");
+
+  function load() {
+    api.provinceItems().then((data) => setItems(data.items));
+  }
+
+  useEffect(() => {
+    load();
+    api.nomenclatorItems("country").then((data) => {
+      const values = data.items.map((item) => item.value);
+      setCountries(values);
+      setCountry((current) => current || values[0] || "");
+    });
+  }, []);
+
+  const filtered = items.filter((item) => item.country === country);
+
+  async function addItem(event) {
+    event.preventDefault();
+    if (!newValue.trim() || !country) return;
+    setError("");
+    try {
+      await api.createProvince(country, newValue.trim());
+      setNewValue("");
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function saveEdit(id) {
+    if (!editValue.trim()) return;
+    try {
+      await api.updateProvince(id, editValue.trim());
+      setEditingId(null);
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function removeItem(id) {
+    if (!window.confirm("¿Eliminar esta provincia/estado?")) return;
+    try {
+      await api.deleteProvince(id);
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  return (
+    <div className="table-block">
+      <div className="panel-title">
+        <strong>Provincias / Estados</strong>
+        <span>{formatNumber(filtered.length)} en {country || "..."}</span>
+      </div>
+      <div className="filters single">
+        <label className="selectbox">
+          <MapPin size={16} />
+          <select value={country} onChange={(event) => setCountry(event.target.value)}>
+            {countries.map((item) => <option key={item}>{item}</option>)}
+          </select>
+        </label>
+      </div>
+      {error ? <div className="alert">{error}</div> : null}
+      <form className="nomenclator-add-row" onSubmit={addItem}>
+        <input placeholder="Nueva provincia o estado" value={newValue} onChange={(event) => setNewValue(event.target.value)} />
+        <button className="primary-button" type="submit"><Plus size={16} /><span>Agregar</span></button>
+      </form>
+      <div className="mini-list">
+        {filtered.map((item) => (
+          <div className="nomenclator-row" key={item.id}>
+            {editingId === item.id ? (
+              <input value={editValue} onChange={(event) => setEditValue(event.target.value)} autoFocus />
+            ) : (
+              <span>{item.name}</span>
+            )}
+            <div className="action-row">
+              {editingId === item.id ? (
+                <button type="button" className="icon-button" onClick={() => saveEdit(item.id)} title="Guardar"><Save size={15} /></button>
+              ) : (
+                <button type="button" className="icon-button" onClick={() => { setEditingId(item.id); setEditValue(item.name); }} title="Editar"><Pencil size={15} /></button>
+              )}
+              <button type="button" className="icon-button" onClick={() => removeItem(item.id)} title="Eliminar"><Trash2 size={15} /></button>
+            </div>
+          </div>
+        ))}
+        {!filtered.length ? <span className="empty-small">Sin provincias registradas para este pais</span> : null}
+      </div>
+    </div>
+  );
+}
+
+const roleLabels = {
+  admin: "Administrador",
+  comercial: "Comercial",
+  tecnico_comercial: "Tecnico comercial",
+  lectura: "Solo lectura"
+};
+
+function UsersView({ currentUserId }) {
+  const [users, setUsers] = useState([]);
+  const [roles, setRoles] = useState([]);
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ username: "", password: "", displayName: "", role: "comercial" });
+  const [error, setError] = useState("");
+
+  function load() {
+    api.authUsers().then((data) => setUsers(data.items));
+  }
+
+  useEffect(() => {
+    load();
+    api.roles().then((data) => setRoles(data.roles));
+  }, []);
+
+  function update(key, value) {
+    setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function createUser(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      await api.createAuthUser(form);
+      setForm({ username: "", password: "", displayName: "", role: "comercial" });
+      setCreating(false);
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function changeRole(user, role) {
+    try {
+      await api.updateAuthUser(user.id, { role });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function toggleActive(user) {
+    try {
+      await api.updateAuthUser(user.id, { active: !user.active });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function removeUser(user) {
+    if (!window.confirm(`¿Desactivar el usuario "${user.displayName}"? No podra volver a iniciar sesion.`)) return;
+    try {
+      await api.deleteAuthUser(user.id);
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  return (
+    <div className="table-block">
+      <div className="panel-title">
+        <strong>Usuarios</strong>
+        <button type="button" className="mini-action" onClick={() => setCreating((value) => !value)}>
+          <Plus size={15} /> Nuevo usuario
+        </button>
+      </div>
+      {error ? <div className="alert">{error}</div> : null}
+      {creating ? (
+        <form className="form-grid nomenclator-create-user" onSubmit={createUser}>
+          <label>Usuario<input value={form.username} onChange={(event) => update("username", event.target.value)} required /></label>
+          <label>Nombre completo<input value={form.displayName} onChange={(event) => update("displayName", event.target.value)} required /></label>
+          <label>Contrasena<input type="password" value={form.password} onChange={(event) => update("password", event.target.value)} required /></label>
+          <label>Rol<select value={form.role} onChange={(event) => update("role", event.target.value)}>{roles.map((role) => <option key={role} value={role}>{roleLabels[role] || role}</option>)}</select></label>
+          <div className="wide modal-actions">
+            <button type="button" className="icon-button" onClick={() => setCreating(false)}><X size={18} /></button>
+            <button className="primary-button" type="submit"><Save size={17} /><span>Guardar</span></button>
+          </div>
+        </form>
+      ) : null}
+      <table>
+        <thead>
+          <tr>
+            <th>Usuario</th>
+            <th>Nombre</th>
+            <th>Rol</th>
+            <th>Estado</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {users.map((user) => (
+            <tr key={user.id}>
+              <td>{user.username}</td>
+              <td>{user.displayName}</td>
+              <td>
+                <select value={user.role} onChange={(event) => changeRole(user, event.target.value)} disabled={user.id === currentUserId}>
+                  {roles.map((role) => <option key={role} value={role}>{roleLabels[role] || role}</option>)}
+                </select>
+              </td>
+              <td><span className={`pill ${user.active ? "" : "danger"}`}>{user.active ? "Activo" : "Inactivo"}</span></td>
+              <td>
+                <div className="action-row">
+                  <button type="button" className="icon-button" onClick={() => toggleActive(user)} title={user.active ? "Desactivar" : "Activar"} disabled={user.id === currentUserId}>
+                    {user.active ? <X size={15} /> : <Check size={15} />}
+                  </button>
+                  <button type="button" className="icon-button" onClick={() => removeUser(user)} title="Eliminar" disabled={user.id === currentUserId}>
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

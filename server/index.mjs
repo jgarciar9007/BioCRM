@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { americanCountries, provincesByCountry, nomenclatorDefaults, nomenclatorCategories } from "./nomenclador-data.mjs";
 
 const app = express();
 const root = process.cwd();
@@ -19,11 +20,68 @@ if (!fs.existsSync(dbFile)) {
 
 const db = new DatabaseSync(dbFile);
 db.exec("PRAGMA foreign_keys = ON;");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS quote_attachments (
+    id TEXT PRIMARY KEY,
+    quote_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mime_type TEXT,
+    data TEXT NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS catalog_items (
+    id TEXT PRIMARY KEY,
+    category TEXT NOT NULL,
+    value TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    deleted INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS catalog_provinces (
+    id TEXT PRIMARY KEY,
+    country TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    deleted INTEGER NOT NULL DEFAULT 0
+  );
+`);
+
+function seedNomenclators() {
+  const itemCount = db.prepare("SELECT COUNT(*) AS c FROM catalog_items").get().c;
+  if (itemCount === 0) {
+    const insertItem = db.prepare("INSERT INTO catalog_items VALUES (?, ?, ?, ?, 0)");
+    let order = 0;
+    for (const country of americanCountries) {
+      insertItem.run(crypto.randomUUID(), "country", country, order++);
+    }
+    for (const [category, values] of Object.entries(nomenclatorDefaults)) {
+      order = 0;
+      for (const value of values) {
+        insertItem.run(crypto.randomUUID(), category, value, order++);
+      }
+    }
+  }
+  const provinceCount = db.prepare("SELECT COUNT(*) AS c FROM catalog_provinces").get().c;
+  if (provinceCount === 0) {
+    const insertProvince = db.prepare("INSERT INTO catalog_provinces VALUES (?, ?, ?, ?, 0)");
+    for (const [country, provinces] of Object.entries(provincesByCountry)) {
+      let order = 0;
+      for (const name of provinces) {
+        insertProvince.run(crypto.randomUUID(), country, name, order++);
+      }
+    }
+  }
+}
+
+seedNomenclators();
 
 const existingTables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
 
 app.use(cors());
-app.use(express.json({ limit: "5mb" }));
+app.use(express.json({ limit: "15mb" }));
 
 const modules = [
   { id: "home", label: "Inicio", group: "Principal" },
@@ -35,7 +93,7 @@ const modules = [
   { id: "products", label: "Productos", group: "Ventas" },
   { id: "invoices", label: "Facturas", group: "Ventas" },
   { id: "documents", label: "Documentos", group: "Colaboracion" },
-  { id: "emails", label: "Correos", group: "Colaboracion", genericModule: "Correos" },
+  { id: "emails", label: "Correos", group: "Actividades", genericModule: "Correos" },
   { id: "projects", label: "Proyectos", group: "Colaboracion" },
   { id: "calls", label: "Llamadas", group: "Actividades", activityType: "Llamada" },
   { id: "meetings", label: "Reuniones", group: "Actividades", activityType: "Reunion" },
@@ -45,11 +103,40 @@ const modules = [
   { id: "calendar", label: "Calendario", group: "Actividades", allActivities: true },
   { id: "accion", label: "Acciones", group: "Personalizados", genericModule: "acciones" },
   { id: "diseno", label: "Disenos", group: "Personalizados", genericModule: "disenos" },
-  { id: "plan_de_accion", label: "Planes de accion", group: "Personalizados", genericModule: "planesAccion" },
-  { id: "cartera", label: "Cartera", group: "Personalizados", genericModule: "cartera" },
+  { id: "plan_de_accion", label: "Planes de accion", group: "Personalizados", genericModule: "planesAccion", hidden: true },
   { id: "company", label: "Datos de la empresa", group: "Sistema" },
+  { id: "nomenclators", label: "Nomencladores", group: "Sistema" },
+  { id: "users", label: "Usuarios", group: "Sistema" },
   { id: "migration", label: "Migracion", group: "Sistema" }
 ];
+
+const roles = ["admin", "comercial", "tecnico_comercial", "lectura"];
+const TECNICO_COMERCIAL_MODULES = new Set(["home", "accounts", "opportunities", "quotes", "products"]);
+
+function moduleGroup(entityId) {
+  return modules.find((item) => item.id === entityId)?.group;
+}
+
+function roleCanAccess(role, entityId, write = false) {
+  if (role === "admin") return true;
+  if (role === "tecnico_comercial") return TECNICO_COMERCIAL_MODULES.has(entityId);
+  if (moduleGroup(entityId) === "Sistema") return false;
+  if (write && role === "lectura") return false;
+  return true;
+}
+
+function requireModuleAccess(entityOf, write) {
+  return (req, res, next) => {
+    const entityId = typeof entityOf === "function" ? entityOf(req) : entityOf;
+    if (!roleCanAccess(req.user.role, entityId, write)) return res.status(403).json({ error: "No tienes permisos para esta accion" });
+    next();
+  };
+}
+
+function requireAdmin(req, res, next) {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Solo un administrador puede hacer esto" });
+  next();
+}
 
 const entityConfig = {
   accounts: { table: "accounts", searchable: ["name", "phone", "email", "city", "country", "industry", "status"], defaultOrder: "name COLLATE NOCASE ASC" },
@@ -65,17 +152,19 @@ const entityConfig = {
   projects: { table: "projects", searchable: ["name", "status", "priority"], defaultOrder: "updated_at DESC" }
 };
 
-const catalogs = {
-  accountTypes: ["Customer", "Prospect", "Integrator", "Competitor"],
-  countries: ["Colombia", "Mexico", "Ecuador", "Venezuela", "Peru", "Costa Rica", "Nicaragua", "Estados Unidos", "Brasil", "Bolivia"],
-  productTypes: ["Foil", "Tricapa", "Pouch", "Tapas", "PVDC", "Vasos", "Lam_Pharma", "Good", "Laminado", "Alu_Alu", "Sobre_Multi_Usos", "Policromia", "Sin_Impresion", "1Tinta", "2Tintas", "3Tintas"],
-  departments: ["COMPRAS", "CALIDAD", "TESORERIA", "GERENCIA", "PRODUCCION", "LOGISTICA", "MERCADEO", "CONTABILIDAD", "DISENO", "SUMINISTROS", "DESPACHOS"],
-  leadStatuses: ["New", "In Process", "Converted"],
-  leadSources: ["Web", "Referido", "Feria", "Llamada en frio", "Redes sociales", "Base de datos"],
-  disenoStatuses: ["Recepcion_Del_Arte", "Aprobacion_Del_Arte", "Solicitud_De_Fotopolimeros", "Entrega_Sobre_Preprensa", "Revisado", "Finalizado", "Ingresado_A_Navision"],
-  carteraStatuses: ["Sin_Gestion", "Gestion_Comercial", "Gestion_Margarita", "Recaudado"],
-  carteraTypes: ["Contado", "30", "45", "60", "90", "110"]
-};
+function catalogValues(category) {
+  return all("SELECT value FROM catalog_items WHERE category = ? AND deleted = 0 ORDER BY sort_order, value", [category]).map((row) => row.value);
+}
+
+function provincesGrouped() {
+  const rows = all("SELECT country, name FROM catalog_provinces WHERE deleted = 0 ORDER BY country, sort_order, name");
+  const grouped = {};
+  for (const row of rows) {
+    grouped[row.country] ||= [];
+    grouped[row.country].push(row.name);
+  }
+  return grouped;
+}
 
 function createId() {
   return crypto.randomUUID();
@@ -279,7 +368,8 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
 app.use("/api", requireAuth);
 
 app.get("/api/modules", (req, res) => {
-  res.json({ modules });
+  const visible = modules.filter((item) => !item.hidden && roleCanAccess(req.user.role, item.id));
+  res.json({ modules: visible, role: req.user.role });
 });
 
 function liveCount(sql) {
@@ -422,8 +512,136 @@ app.get("/api/directory", (req, res) => {
   });
 });
 
+app.get("/api/roles", requireAdmin, (req, res) => {
+  res.json({ roles });
+});
+
+app.get("/api/auth-users", requireAdmin, (req, res) => {
+  res.json({ items: all("SELECT id, username, display_name, role, active, created_at FROM auth_users ORDER BY display_name") });
+});
+
+app.post("/api/auth-users", requireAdmin, (req, res) => {
+  const body = req.body || {};
+  if (!body.username || !body.password || !body.displayName) return res.status(400).json({ error: "Usuario, contrasena y nombre son obligatorios" });
+  if (!roles.includes(body.role)) return res.status(400).json({ error: "Rol invalido" });
+  const existing = get("SELECT id FROM auth_users WHERE username = ?", [body.username]);
+  if (existing) return res.status(400).json({ error: "Ese usuario ya existe" });
+  const id = createId();
+  run("INSERT INTO auth_users VALUES (?, ?, ?, ?, ?, ?, ?)", [id, body.username, hashPassword(body.password), body.displayName, body.role, 1, nowIso()]);
+  const after = get("SELECT id, username, display_name, role, active, created_at FROM auth_users WHERE id = ?", [id]);
+  audit(req, "create", "auth_users", id, null, after);
+  res.status(201).json(after);
+});
+
+app.patch("/api/auth-users/:id", requireAdmin, (req, res) => {
+  const before = get("SELECT id, username, display_name, role, active, created_at FROM auth_users WHERE id = ?", [req.params.id]);
+  if (!before) return res.status(404).json({ error: "Usuario no encontrado" });
+  const body = req.body || {};
+  const sets = [];
+  const params = [];
+  if (body.displayName) { sets.push("display_name = ?"); params.push(body.displayName); }
+  if (body.role) {
+    if (!roles.includes(body.role)) return res.status(400).json({ error: "Rol invalido" });
+    sets.push("role = ?");
+    params.push(body.role);
+  }
+  if (body.active !== undefined) { sets.push("active = ?"); params.push(body.active ? 1 : 0); }
+  if (body.password) { sets.push("password_hash = ?"); params.push(hashPassword(body.password)); }
+  if (!sets.length) return res.json(before);
+  params.push(req.params.id);
+  run(`UPDATE auth_users SET ${sets.join(", ")} WHERE id = ?`, params);
+  if (body.active === false) run("DELETE FROM sessions WHERE user_id = ?", [req.params.id]);
+  const after = get("SELECT id, username, display_name, role, active, created_at FROM auth_users WHERE id = ?", [req.params.id]);
+  audit(req, "update", "auth_users", req.params.id, before, after);
+  res.json(after);
+});
+
+app.delete("/api/auth-users/:id", requireAdmin, (req, res) => {
+  if (req.params.id === req.user.id) return res.status(400).json({ error: "No puedes eliminar tu propio usuario" });
+  const before = get("SELECT id, username, display_name, role, active, created_at FROM auth_users WHERE id = ?", [req.params.id]);
+  if (!before) return res.status(404).json({ error: "Usuario no encontrado" });
+  run("UPDATE auth_users SET active = 0 WHERE id = ?", [req.params.id]);
+  run("DELETE FROM sessions WHERE user_id = ?", [req.params.id]);
+  audit(req, "delete", "auth_users", req.params.id, before, null);
+  res.json({ ok: true });
+});
+
 app.get("/api/catalogs", (req, res) => {
-  res.json(catalogs);
+  res.json({
+    accountTypes: catalogValues("account_type"),
+    countries: catalogValues("country"),
+    productTypes: catalogValues("product_type"),
+    departments: catalogValues("department"),
+    leadStatuses: catalogValues("lead_status"),
+    leadSources: catalogValues("lead_source"),
+    disenoStatuses: catalogValues("diseno_status"),
+    ivaRates: catalogValues("iva_rate").map(Number),
+    provincesByCountry: provincesGrouped()
+  });
+});
+
+app.get("/api/nomenclators", requireAdmin, (req, res) => {
+  res.json({ categories: nomenclatorCategories });
+});
+
+app.get("/api/nomenclators/province", requireAdmin, (req, res) => {
+  res.json({ items: all("SELECT id, country, name, sort_order AS sortOrder FROM catalog_provinces WHERE deleted = 0 ORDER BY country, sort_order, name") });
+});
+
+app.post("/api/nomenclators/province", requireAdmin, (req, res) => {
+  const body = req.body || {};
+  if (!body.country || !body.name) return res.status(400).json({ error: "Pais y nombre son obligatorios" });
+  const id = createId();
+  const maxOrder = db.prepare("SELECT COALESCE(MAX(sort_order), -1) AS m FROM catalog_provinces WHERE country = ?").get(body.country).m;
+  run("INSERT INTO catalog_provinces VALUES (?, ?, ?, ?, 0)", [id, body.country, body.name, maxOrder + 1]);
+  res.status(201).json({ id, country: body.country, name: body.name });
+});
+
+app.patch("/api/nomenclators/province/:id", requireAdmin, (req, res) => {
+  const before = get("SELECT id FROM catalog_provinces WHERE id = ? AND deleted = 0", [req.params.id]);
+  if (!before) return res.status(404).json({ error: "Registro no encontrado" });
+  const body = req.body || {};
+  if (!body.name) return res.status(400).json({ error: "El nombre es obligatorio" });
+  run("UPDATE catalog_provinces SET name = ? WHERE id = ?", [body.name, req.params.id]);
+  res.json({ ok: true });
+});
+
+app.delete("/api/nomenclators/province/:id", requireAdmin, (req, res) => {
+  const before = get("SELECT id FROM catalog_provinces WHERE id = ? AND deleted = 0", [req.params.id]);
+  if (!before) return res.status(404).json({ error: "Registro no encontrado" });
+  run("UPDATE catalog_provinces SET deleted = 1 WHERE id = ?", [req.params.id]);
+  res.json({ ok: true });
+});
+
+app.get("/api/nomenclators/:category", requireAdmin, (req, res) => {
+  if (!nomenclatorCategories.some((item) => item.id === req.params.category)) return res.status(404).json({ error: "Nomenclador no disponible" });
+  res.json({ items: all("SELECT id, value, sort_order AS sortOrder FROM catalog_items WHERE category = ? AND deleted = 0 ORDER BY sort_order, value", [req.params.category]) });
+});
+
+app.post("/api/nomenclators/:category", requireAdmin, (req, res) => {
+  if (!nomenclatorCategories.some((item) => item.id === req.params.category)) return res.status(404).json({ error: "Nomenclador no disponible" });
+  const body = req.body || {};
+  if (!body.value) return res.status(400).json({ error: "El valor es obligatorio" });
+  const id = createId();
+  const maxOrder = db.prepare("SELECT COALESCE(MAX(sort_order), -1) AS m FROM catalog_items WHERE category = ?").get(req.params.category).m;
+  run("INSERT INTO catalog_items VALUES (?, ?, ?, ?, 0)", [id, req.params.category, body.value, maxOrder + 1]);
+  res.status(201).json({ id, value: body.value });
+});
+
+app.patch("/api/nomenclators/:category/:id", requireAdmin, (req, res) => {
+  const before = get("SELECT id FROM catalog_items WHERE id = ? AND category = ? AND deleted = 0", [req.params.id, req.params.category]);
+  if (!before) return res.status(404).json({ error: "Registro no encontrado" });
+  const body = req.body || {};
+  if (!body.value) return res.status(400).json({ error: "El valor es obligatorio" });
+  run("UPDATE catalog_items SET value = ? WHERE id = ?", [body.value, req.params.id]);
+  res.json({ ok: true });
+});
+
+app.delete("/api/nomenclators/:category/:id", requireAdmin, (req, res) => {
+  const before = get("SELECT id FROM catalog_items WHERE id = ? AND category = ? AND deleted = 0", [req.params.id, req.params.category]);
+  if (!before) return res.status(404).json({ error: "Registro no encontrado" });
+  run("UPDATE catalog_items SET deleted = 1 WHERE id = ?", [req.params.id]);
+  res.json({ ok: true });
 });
 
 const defaultCompanyProfile = {
@@ -443,7 +661,7 @@ app.get("/api/company", (req, res) => {
   res.json({ ...defaultCompanyProfile, ...parseJson(stored, {}) });
 });
 
-app.put("/api/company", (req, res) => {
+app.put("/api/company", requireAdmin, (req, res) => {
   const body = req.body || {};
   const profile = {
     name: body.name || defaultCompanyProfile.name,
@@ -461,7 +679,7 @@ app.put("/api/company", (req, res) => {
   res.json(profile);
 });
 
-app.get("/api/accounts", (req, res) => {
+app.get("/api/accounts", requireModuleAccess("accounts", false), (req, res) => {
   const config = entityConfig.accounts;
   const search = searchWhere(config, req.query.search || "");
   const filters = [...search.params];
@@ -479,7 +697,7 @@ app.get("/api/accounts", (req, res) => {
   res.json(paginate(req, `SELECT * FROM accounts WHERE ${where}`, `SELECT COUNT(*) AS total FROM accounts WHERE ${where}`, filters, config.defaultOrder));
 });
 
-app.get("/api/accounts/:id", (req, res) => {
+app.get("/api/accounts/:id", requireModuleAccess("accounts", false), (req, res) => {
   const account = get("SELECT * FROM accounts WHERE id = ?", [req.params.id]);
   if (!account) return res.status(404).json({ error: "Cuenta no encontrada" });
   const accountId = req.params.id;
@@ -560,7 +778,7 @@ app.get("/api/accounts/:id", (req, res) => {
   });
 });
 
-app.post("/api/accounts", (req, res) => {
+app.post("/api/accounts", requireModuleAccess("accounts", true), (req, res) => {
   const body = req.body || {};
   if (!body.name) return res.status(400).json({ error: "El nombre del cliente es obligatorio" });
   const id = createId();
@@ -591,7 +809,7 @@ app.post("/api/accounts", (req, res) => {
   res.status(201).json(record);
 });
 
-app.patch("/api/accounts/:id", (req, res) => {
+app.patch("/api/accounts/:id", requireModuleAccess("accounts", true), (req, res) => {
   const before = get("SELECT * FROM accounts WHERE id = ?", [req.params.id]);
   if (!before) return res.status(404).json({ error: "Cuenta no encontrada" });
   const allowed = ["name", "type", "industry", "status", "phone", "website", "email", "city", "state", "country", "address", "description"];
@@ -604,7 +822,7 @@ app.patch("/api/accounts/:id", (req, res) => {
   res.json(after);
 });
 
-app.delete("/api/accounts/:id", (req, res) => {
+app.delete("/api/accounts/:id", requireModuleAccess("accounts", true), (req, res) => {
   const before = get("SELECT * FROM accounts WHERE id = ?", [req.params.id]);
   if (!before) return res.status(404).json({ error: "Cuenta no encontrada" });
   run("UPDATE accounts SET deleted = 1, status = 'Eliminado', updated_at = ?, local_updated_at = ? WHERE id = ?", [nowIso(), nowIso(), req.params.id]);
@@ -612,7 +830,7 @@ app.delete("/api/accounts/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/entities/:entity", (req, res) => {
+app.get("/api/entities/:entity", requireModuleAccess((req) => req.params.entity, false), (req, res) => {
   const config = getEntityConfig(req.params.entity);
   if (!config) return res.status(404).json({ error: "Entidad no disponible" });
   if (config.activityType) {
@@ -673,7 +891,7 @@ app.get("/api/entities/:entity", (req, res) => {
   res.json(paginate(req, `SELECT * FROM ${config.table} WHERE ${search.sql} AND deleted = 0`, `SELECT COUNT(*) AS total FROM ${config.table} WHERE ${search.sql} AND deleted = 0`, search.params, config.defaultOrder));
 });
 
-app.post("/api/entities/:entity", (req, res) => {
+app.post("/api/entities/:entity", requireModuleAccess((req) => req.params.entity, true), (req, res) => {
   const config = getEntityConfig(req.params.entity);
   const body = req.body || {};
   if (!config) return res.status(404).json({ error: "Entidad no disponible" });
@@ -739,7 +957,7 @@ function resolveEditableEntity(entity) {
   return null;
 }
 
-app.patch("/api/entities/:entity/:id", (req, res) => {
+app.patch("/api/entities/:entity/:id", requireModuleAccess((req) => req.params.entity, true), (req, res) => {
   if (req.params.entity === "quotes") return updateQuote(req, res);
   const resolved = resolveEditableEntity(req.params.entity);
   if (!resolved) return res.status(400).json({ error: "Edicion no implementada para este modulo" });
@@ -761,7 +979,7 @@ app.patch("/api/entities/:entity/:id", (req, res) => {
   res.json(after);
 });
 
-app.delete("/api/entities/:entity/:id", (req, res) => {
+app.delete("/api/entities/:entity/:id", requireModuleAccess((req) => req.params.entity, true), (req, res) => {
   if (req.params.entity === "quotes") return deleteQuote(req, res);
   const resolved = resolveEditableEntity(req.params.entity);
   if (!resolved) return res.status(400).json({ error: "Eliminacion no implementada para este modulo" });
@@ -793,7 +1011,8 @@ function quoteDetail(id) {
      ORDER BY l.group_id, l.number, l.name`,
     [id]
   );
-  return { quote, groups, lines };
+  const attachments = all("SELECT id, name, mime_type, size, created_at FROM quote_attachments WHERE quote_id = ? AND deleted = 0 ORDER BY created_at DESC", [id]);
+  return { quote, groups, lines, attachments };
 }
 
 function accountQuoteDefaults(accountId) {
@@ -825,7 +1044,7 @@ function accountQuoteDefaults(accountId) {
   };
 }
 
-app.get("/api/quote-context", (req, res) => {
+app.get("/api/quote-context", requireModuleAccess("quotes", false), (req, res) => {
   const accountContext = req.query.accountId ? accountQuoteDefaults(req.query.accountId) : null;
   const nextNumber = (db.prepare("SELECT MAX(CAST(number AS INTEGER)) AS max_number FROM quotes").get().max_number || 0) + 1;
   const template = hasTable("quote_templates") ? get("SELECT id, name FROM quote_templates WHERE deleted = 0 AND active = 1 ORDER BY name LIMIT 1") : null;
@@ -854,7 +1073,7 @@ app.get("/api/quote-context", (req, res) => {
   });
 });
 
-app.get("/api/quotes/:id", (req, res) => {
+app.get("/api/quotes/:id", requireModuleAccess("quotes", false), (req, res) => {
   const detail = quoteDetail(req.params.id);
   if (!detail) return res.status(404).json({ error: "Cotizacion no encontrada" });
   res.json(detail);
@@ -872,7 +1091,8 @@ function writeQuoteLines(quoteId, lines, currency, timestamp, shippingAmount = 0
     const vatAmount = lineTax(line);
     const total = quantity * unitPrice - discountAmount + vatAmount;
     const lineId = createId();
-    stmt.run(lineId, quoteId, groupId, line.productId || null, index + 1, line.name || "Producto", line.partNumber || null, line.description || null, quantity, Number(line.costPrice || 0), Number(line.listPrice || unitPrice), unitPrice, Number(line.discount || 0), discountAmount, line.discountType || "Amount", line.vatRate || null, vatAmount, total, currency.id, 0, JSON.stringify({ source: "biocrm" }));
+    const vatRate = line.vatRate !== undefined && line.vatRate !== null && line.vatRate !== "" ? String(line.vatRate) : null;
+    stmt.run(lineId, quoteId, groupId, line.productId || null, index + 1, line.name || "Producto", line.partNumber || null, line.description || null, quantity, Number(line.costPrice || 0), Number(line.listPrice || unitPrice), unitPrice, Number(line.discount || 0), discountAmount, line.discountType || "Amount", vatRate, vatAmount, total, currency.id, 0, JSON.stringify({ source: "biocrm" }));
     if (line.productId) {
       run("INSERT INTO entity_links VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [createId(), "quote_lines", lineId, "products", line.productId, "product", "biocrm_quote_lines", timestamp, 0, JSON.stringify({ source: "biocrm" })]);
     }
@@ -1053,6 +1273,7 @@ function deleteQuote(req, res) {
     run("UPDATE quotes SET deleted = 1 WHERE id = ?", [req.params.id]);
     run("UPDATE quote_groups SET deleted = 1 WHERE quote_id = ?", [req.params.id]);
     run("UPDATE quote_lines SET deleted = 1 WHERE quote_id = ?", [req.params.id]);
+    run("UPDATE quote_attachments SET deleted = 1 WHERE quote_id = ?", [req.params.id]);
     run("DELETE FROM entity_links WHERE source_module = 'quotes' AND source_id = ?", [req.params.id]);
     db.exec("COMMIT");
   } catch (error) {
@@ -1063,10 +1284,37 @@ function deleteQuote(req, res) {
   res.json({ ok: true });
 }
 
-app.patch("/api/quotes/:id", (req, res) => updateQuote(req, res));
-app.delete("/api/quotes/:id", (req, res) => deleteQuote(req, res));
+app.patch("/api/quotes/:id", requireModuleAccess("quotes", true), (req, res) => updateQuote(req, res));
+app.delete("/api/quotes/:id", requireModuleAccess("quotes", true), (req, res) => deleteQuote(req, res));
 
-app.get("/api/migration", (req, res) => {
+app.post("/api/quotes/:id/attachments", requireModuleAccess("quotes", true), (req, res) => {
+  const quote = get("SELECT id FROM quotes WHERE id = ?", [req.params.id]);
+  if (!quote) return res.status(404).json({ error: "Cotizacion no encontrada" });
+  const body = req.body || {};
+  if (!body.name || !body.data) return res.status(400).json({ error: "Archivo invalido" });
+  const id = createId();
+  const size = Math.round((body.data.length * 3) / 4);
+  run("INSERT INTO quote_attachments VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [id, req.params.id, body.name, body.mimeType || null, body.data, size, 0, nowIso()]);
+  const after = get("SELECT id, name, mime_type, size, created_at FROM quote_attachments WHERE id = ?", [id]);
+  audit(req, "create", "quote_attachments", id, null, after);
+  res.status(201).json(after);
+});
+
+app.get("/api/quotes/:id/attachments/:attachmentId", requireModuleAccess("quotes", false), (req, res) => {
+  const attachment = get("SELECT * FROM quote_attachments WHERE id = ? AND quote_id = ? AND deleted = 0", [req.params.attachmentId, req.params.id]);
+  if (!attachment) return res.status(404).json({ error: "Adjunto no encontrado" });
+  res.json(attachment);
+});
+
+app.delete("/api/quotes/:id/attachments/:attachmentId", requireModuleAccess("quotes", true), (req, res) => {
+  const attachment = get("SELECT id, name FROM quote_attachments WHERE id = ? AND quote_id = ? AND deleted = 0", [req.params.attachmentId, req.params.id]);
+  if (!attachment) return res.status(404).json({ error: "Adjunto no encontrado" });
+  run("UPDATE quote_attachments SET deleted = 1 WHERE id = ?", [req.params.attachmentId]);
+  audit(req, "delete", "quote_attachments", req.params.attachmentId, attachment, null);
+  res.json({ ok: true });
+});
+
+app.get("/api/migration", requireAdmin, (req, res) => {
   res.json({
     topTables: all("SELECT table_name, rows_count AS rows FROM migration_tables ORDER BY rows_count DESC LIMIT 30").map((row) => ({ table: row.tableName, rows: row.rows })),
     selectedTableCounts: Object.fromEntries(db.prepare("SELECT table_name, rows_count FROM migration_tables ORDER BY table_name").all().map((row) => [row.table_name, row.rows_count]))
