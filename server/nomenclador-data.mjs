@@ -169,7 +169,8 @@ export const nomenclatorDefaults = {
   lead_status: ["New", "In Process", "Converted"],
   lead_source: ["Web", "Referido", "Feria", "Llamada en frio", "Redes sociales", "Base de datos"],
   diseno_status: ["Recepcion_Del_Arte", "Aprobacion_Del_Arte", "Solicitud_De_Fotopolimeros", "Entrega_Sobre_Preprensa", "Revisado", "Finalizado", "Ingresado_A_Navision"],
-  iva_rate: ["0", "5", "19"]
+  iva_rate: ["0", "5", "19"],
+  unit_of_measure: ["Unidad", "Millar", "Kilogramo", "Gramo", "Metro", "Metro Cuadrado", "Rollo", "Caja", "Docena", "Paquete", "Litro", "Bulto"]
 };
 
 export const nomenclatorCategories = [
@@ -177,6 +178,7 @@ export const nomenclatorCategories = [
   { id: "province", label: "Provincias / Estados" },
   { id: "account_type", label: "Tipos de cuenta" },
   { id: "product_type", label: "Tipos de producto" },
+  { id: "unit_of_measure", label: "Unidades de medida" },
   { id: "department", label: "Departamentos de contacto" },
   { id: "lead_status", label: "Estados de prospecto" },
   { id: "lead_source", label: "Fuentes de prospecto" },

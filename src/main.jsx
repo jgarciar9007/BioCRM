@@ -1070,8 +1070,8 @@ function QuoteDrawer({ id, onClose, onChanged, catalogs, role }) {
     setDraft((current) => ({ ...current, [key]: value }));
   }
 
-  function updateLine(index, key, value) {
-    setDraft((current) => ({ ...current, lines: current.lines.map((line, i) => (i === index ? { ...line, [key]: value } : line)) }));
+  function updateLine(index, patch) {
+    setDraft((current) => ({ ...current, lines: current.lines.map((line, i) => (i === index ? { ...line, ...patch } : line)) }));
   }
 
   function addLine() {
@@ -1256,10 +1256,10 @@ function QuoteDrawer({ id, onClose, onChanged, catalogs, role }) {
             </div>
             {draft.lines.map((line, index) => (
               <div className="line-editor" key={index}>
-                <input placeholder="Nombre del producto" value={line.name} onChange={(event) => updateLine(index, "name", event.target.value)} required />
-                <input type="number" min="0" step="0.01" value={line.quantity} onChange={(event) => updateLine(index, "quantity", event.target.value)} />
-                <input type="number" min="0" step="0.01" value={line.unitPrice} onChange={(event) => updateLine(index, "unitPrice", event.target.value)} />
-                <select value={line.vatRate ?? 19} onChange={(event) => updateLine(index, "vatRate", event.target.value)}>
+                <ProductLineField line={line} onChangeLine={(patch) => updateLine(index, patch)} />
+                <input type="number" min="0" step="0.01" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} />
+                <input type="number" min="0" step="0.01" value={line.unitPrice} onChange={(event) => updateLine(index, { unitPrice: event.target.value })} />
+                <select value={line.vatRate ?? 19} onChange={(event) => updateLine(index, { vatRate: event.target.value })}>
                   {withCurrent(ivaRates, line.vatRate).map((rate) => <option key={rate} value={rate}>{rate}%</option>)}
                 </select>
                 <span className="line-amount">{formatMoney(lineAmount(line))}</span>
@@ -1338,7 +1338,7 @@ function recordFieldsFor(entity, catalogs) {
     case "leads":
       return [["name", "Nombre"], ["accountName", "Empresa"], ["status", "Estado", "select", c.leadStatuses || []], ["source", "Fuente", "select", c.leadSources || []], ["phone", "Telefono"], ["email", "Email"], ["city", "Ciudad"], ["country", "Pais", "select", c.countries || []]];
     case "products":
-      return [["name", "Producto"], ["partNumber", "Codigo"], ["type", "Tipo", "select", c.productTypes || []], ["price", "Precio", "number"], ["cost", "Costo", "number"]];
+      return [["name", "Producto"], ["partNumber", "Codigo"], ["type", "Tipo", "select", c.productTypes || []], ["unit", "Unidad de medida", "select", c.unitsOfMeasure || []], ["price", "Precio por unidad", "number"], ["cost", "Costo por unidad", "number"]];
     case "cases":
       return [["name", "Asunto"], ["status", "Estado", "select", caseStatuses], ["priority", "Prioridad"], ["type", "Tipo"], ["description", "Descripcion", "textarea"]];
     case "notes":
@@ -1573,6 +1573,61 @@ function AccountPicker({ onPick }) {
   );
 }
 
+function ProductLineField({ line, onChangeLine }) {
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const term = (line.name || "").trim();
+    if (!term || line.productId) {
+      setResults([]);
+      return;
+    }
+    const handle = setTimeout(() => {
+      api.entity("products", { search: term, pageSize: 6 }).then((data) => setResults(data.items));
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [line.name, line.productId]);
+
+  function pick(product) {
+    onChangeLine({
+      productId: product.id,
+      name: product.name,
+      partNumber: product.partNumber || "",
+      unitPrice: Number(product.price || 0),
+      listPrice: Number(product.price || 0),
+      costPrice: Number(product.cost || 0),
+      unit: product.unit || ""
+    });
+    setOpen(false);
+  }
+
+  return (
+    <div className="picker line-product-picker">
+      <input
+        placeholder="Buscar producto o escribir uno nuevo"
+        value={line.name || ""}
+        onChange={(event) => {
+          onChangeLine({ name: event.target.value, productId: null });
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        required
+      />
+      {open && results.length ? (
+        <div className="picker-results">
+          {results.map((product) => (
+            <button type="button" key={product.id} onClick={() => pick(product)}>
+              <strong>{product.name}</strong>
+              <span>{[product.partNumber, product.unit, Number(product.price || 0) ? formatMoney(product.price) : null].filter(Boolean).join(" · ") || "Sin precio registrado"}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ClientField({ entity, form, accountName, onPickAccount }) {
   if (entity === "accounts" || entity === "products" || entity === "leads") return null;
   if (form.accountId && accountName) {
@@ -1684,8 +1739,9 @@ function EntityForm({ entity, form, update, accountName, onPickAccount, director
         <label>Producto<input value={form.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
         <label>Codigo<input value={form.partNumber || ""} onChange={(event) => update("partNumber", event.target.value)} /></label>
         <label>Tipo<select value={form.type || ""} onChange={(event) => update("type", event.target.value)}><option value="">Selecciona tipo</option>{withCurrent(catalogs.productTypes || [], form.type).map((type) => <option key={type}>{type}</option>)}</select></label>
-        <label>Precio<input type="number" min="0" step="0.01" value={form.price || ""} onChange={(event) => update("price", event.target.value)} /></label>
-        <label>Costo<input type="number" min="0" step="0.01" value={form.cost || ""} onChange={(event) => update("cost", event.target.value)} /></label>
+        <label>Unidad de medida<select value={form.unit || ""} onChange={(event) => update("unit", event.target.value)}><option value="">Sin especificar</option>{withCurrent(catalogs.unitsOfMeasure || [], form.unit).map((unit) => <option key={unit}>{unit}</option>)}</select></label>
+        <label>Precio por unidad<input type="number" min="0" step="0.01" value={form.price || ""} onChange={(event) => update("price", event.target.value)} /></label>
+        <label>Costo por unidad<input type="number" min="0" step="0.01" value={form.cost || ""} onChange={(event) => update("cost", event.target.value)} /></label>
       </div>
     );
   }
@@ -1759,8 +1815,8 @@ function QuoteForm({ form, setForm, update, accountName, onPickAccount, catalogs
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [context]);
 
-  function updateLine(index, key, value) {
-    const lines = form.lines.map((line, i) => (i === index ? { ...line, [key]: value } : line));
+  function updateLine(index, patch) {
+    const lines = form.lines.map((line, i) => (i === index ? { ...line, ...patch } : line));
     setForm({ ...form, lines });
   }
   function addLine() {
@@ -1819,10 +1875,10 @@ function QuoteForm({ form, setForm, update, accountName, onPickAccount, catalogs
         </div>
         {form.lines.map((line, index) => (
           <div className="line-editor" key={index}>
-            <input placeholder="Nombre del producto" value={line.name} onChange={(event) => updateLine(index, "name", event.target.value)} required />
-            <input type="number" min="0" step="0.01" value={line.quantity} onChange={(event) => updateLine(index, "quantity", event.target.value)} />
-            <input type="number" min="0" step="0.01" value={line.unitPrice} onChange={(event) => updateLine(index, "unitPrice", event.target.value)} />
-            <select value={line.vatRate ?? 19} onChange={(event) => updateLine(index, "vatRate", event.target.value)}>
+            <ProductLineField line={line} onChangeLine={(patch) => updateLine(index, patch)} />
+            <input type="number" min="0" step="0.01" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} />
+            <input type="number" min="0" step="0.01" value={line.unitPrice} onChange={(event) => updateLine(index, { unitPrice: event.target.value })} />
+            <select value={line.vatRate ?? 19} onChange={(event) => updateLine(index, { vatRate: event.target.value })}>
               {withCurrent(ivaRates, line.vatRate).map((rate) => <option key={rate} value={rate}>{rate}%</option>)}
             </select>
             <span className="line-amount">{formatMoney(lineAmount(line))}</span>

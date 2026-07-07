@@ -50,18 +50,20 @@ db.exec(`
 `);
 
 function seedNomenclators() {
-  const itemCount = db.prepare("SELECT COUNT(*) AS c FROM catalog_items").get().c;
-  if (itemCount === 0) {
-    const insertItem = db.prepare("INSERT INTO catalog_items VALUES (?, ?, ?, ?, 0)");
+  const insertItem = db.prepare("INSERT INTO catalog_items VALUES (?, ?, ?, ?, 0)");
+  const hasCategory = (category) => db.prepare("SELECT COUNT(*) AS c FROM catalog_items WHERE category = ?").get(category).c > 0;
+
+  if (!hasCategory("country")) {
     let order = 0;
     for (const country of americanCountries) {
       insertItem.run(crypto.randomUUID(), "country", country, order++);
     }
-    for (const [category, values] of Object.entries(nomenclatorDefaults)) {
-      order = 0;
-      for (const value of values) {
-        insertItem.run(crypto.randomUUID(), category, value, order++);
-      }
+  }
+  for (const [category, values] of Object.entries(nomenclatorDefaults)) {
+    if (hasCategory(category)) continue;
+    let order = 0;
+    for (const value of values) {
+      insertItem.run(crypto.randomUUID(), category, value, order++);
     }
   }
   const provinceCount = db.prepare("SELECT COUNT(*) AS c FROM catalog_provinces").get().c;
@@ -77,6 +79,15 @@ function seedNomenclators() {
 }
 
 seedNomenclators();
+
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name);
+  if (!columns.includes(column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+ensureColumn("products", "unit", "TEXT");
 
 const existingTables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
 
@@ -576,6 +587,7 @@ app.get("/api/catalogs", (req, res) => {
     leadSources: catalogValues("lead_source"),
     disenoStatuses: catalogValues("diseno_status"),
     ivaRates: catalogValues("iva_rate").map(Number),
+    unitsOfMeasure: catalogValues("unit_of_measure"),
     provincesByCountry: provincesGrouped()
   });
 });
@@ -915,7 +927,7 @@ app.post("/api/entities/:entity", requireModuleAccess((req) => req.params.entity
   if (req.params.entity === "contacts") {
     run("INSERT INTO contacts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, body.name, body.title || null, body.department || null, body.accountId || null, JSON.stringify([body.accountId].filter(Boolean)), body.phone || null, body.email || null, body.city || null, body.state || null, body.country || null, body.address || null, req.user.id, 0, createdAt, createdAt, JSON.stringify({ source: "biocrm" })]);
   } else if (req.params.entity === "products") {
-    run("INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, body.name, body.partNumber || null, body.type || null, body.categoryId || null, body.price || 0, body.cost || 0, 0, createdAt, createdAt, JSON.stringify({ source: "biocrm" })]);
+    run("INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, body.name, body.partNumber || null, body.type || null, body.categoryId || null, body.price || 0, body.cost || 0, 0, createdAt, createdAt, JSON.stringify({ source: "biocrm" }), body.unit || null]);
   } else if (req.params.entity === "cases") {
     run("INSERT INTO cases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, body.number || null, body.name, body.accountId || null, body.status || "Recepcion", body.priority || null, body.type || null, body.description || null, 0, createdAt, createdAt, JSON.stringify({ source: "biocrm" })]);
   } else if (req.params.entity === "opportunities") {
@@ -936,7 +948,7 @@ const editableFieldsByEntity = {
   contacts: ["name", "title", "department", "phone", "email", "city", "state", "country", "address"],
   opportunities: ["name", "stage", "type", "amount", "probability", "closeDate"],
   leads: ["name", "accountName", "status", "source", "phone", "email", "city", "country"],
-  products: ["name", "partNumber", "type", "price", "cost"],
+  products: ["name", "partNumber", "type", "price", "cost", "unit"],
   cases: ["name", "status", "priority", "type", "description"],
   notes: ["title", "description"]
 };
