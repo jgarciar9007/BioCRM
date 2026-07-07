@@ -103,7 +103,7 @@ function publicRow(row) {
   const result = {};
   for (const [key, value] of Object.entries(row)) {
     if (key === "legacy_json") result.legacy = parseJson(value);
-    else if (key.endsWith("_json")) result[key.replace(/_json$/, "")] = parseJson(value, []);
+    else if (key.endsWith("_json")) result[key.replace(/_json$/, "").replace(/_([a-z])/g, (_, c) => c.toUpperCase())] = parseJson(value, []);
     else result[key.replace(/_([a-z])/g, (_, c) => c.toUpperCase())] = value;
   }
   return result;
