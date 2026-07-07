@@ -47,6 +47,7 @@ const modules = [
   { id: "diseno", label: "Disenos", group: "Personalizados", genericModule: "disenos" },
   { id: "plan_de_accion", label: "Planes de accion", group: "Personalizados", genericModule: "planesAccion" },
   { id: "cartera", label: "Cartera", group: "Personalizados", genericModule: "cartera" },
+  { id: "company", label: "Datos de la empresa", group: "Sistema" },
   { id: "migration", label: "Migracion", group: "Sistema" }
 ];
 
@@ -62,6 +63,18 @@ const entityConfig = {
   documents: { table: "documents", searchable: ["name", "status", "category"], defaultOrder: "updated_at DESC" },
   notes: { table: "notes", searchable: ["title", "description"], defaultOrder: "updated_at DESC" },
   projects: { table: "projects", searchable: ["name", "status", "priority"], defaultOrder: "updated_at DESC" }
+};
+
+const catalogs = {
+  accountTypes: ["Customer", "Prospect", "Integrator", "Competitor"],
+  countries: ["Colombia", "Mexico", "Ecuador", "Venezuela", "Peru", "Costa Rica", "Nicaragua", "Estados Unidos", "Brasil", "Bolivia"],
+  productTypes: ["Foil", "Tricapa", "Pouch", "Tapas", "PVDC", "Vasos", "Lam_Pharma", "Good", "Laminado", "Alu_Alu", "Sobre_Multi_Usos", "Policromia", "Sin_Impresion", "1Tinta", "2Tintas", "3Tintas"],
+  departments: ["COMPRAS", "CALIDAD", "TESORERIA", "GERENCIA", "PRODUCCION", "LOGISTICA", "MERCADEO", "CONTABILIDAD", "DISENO", "SUMINISTROS", "DESPACHOS"],
+  leadStatuses: ["New", "In Process", "Converted"],
+  leadSources: ["Web", "Referido", "Feria", "Llamada en frio", "Redes sociales", "Base de datos"],
+  disenoStatuses: ["Recepcion_Del_Arte", "Aprobacion_Del_Arte", "Solicitud_De_Fotopolimeros", "Entrega_Sobre_Preprensa", "Revisado", "Finalizado", "Ingresado_A_Navision"],
+  carteraStatuses: ["Sin_Gestion", "Gestion_Comercial", "Gestion_Margarita", "Recaudado"],
+  carteraTypes: ["Contado", "30", "45", "60", "90", "110"]
 };
 
 function createId() {
@@ -407,6 +420,45 @@ app.get("/api/directory", (req, res) => {
     currencies: hasTable("currencies") ? all("SELECT id, name, symbol, iso4217, conversion_rate, status FROM currencies WHERE deleted = 0 ORDER BY name") : [],
     quoteTemplates: hasTable("quote_templates") ? all("SELECT id, name, type, active FROM quote_templates WHERE deleted = 0 AND active = 1 ORDER BY name") : []
   });
+});
+
+app.get("/api/catalogs", (req, res) => {
+  res.json(catalogs);
+});
+
+const defaultCompanyProfile = {
+  name: "Bioempak",
+  taxId: "",
+  address: "",
+  city: "",
+  country: "Colombia",
+  phone: "",
+  email: "",
+  website: "",
+  logo: ""
+};
+
+app.get("/api/company", (req, res) => {
+  const stored = get("SELECT value FROM app_meta WHERE key = 'company_profile'")?.value;
+  res.json({ ...defaultCompanyProfile, ...parseJson(stored, {}) });
+});
+
+app.put("/api/company", (req, res) => {
+  const body = req.body || {};
+  const profile = {
+    name: body.name || defaultCompanyProfile.name,
+    taxId: body.taxId || "",
+    address: body.address || "",
+    city: body.city || "",
+    country: body.country || "",
+    phone: body.phone || "",
+    email: body.email || "",
+    website: body.website || "",
+    logo: body.logo || ""
+  };
+  run("INSERT INTO app_meta VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ["company_profile", JSON.stringify(profile)]);
+  audit(req, "update", "company_profile", "company_profile", null, profile);
+  res.json(profile);
 });
 
 app.get("/api/accounts", (req, res) => {

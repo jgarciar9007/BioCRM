@@ -437,6 +437,7 @@ td small {
 .searchbox input,
 .selectbox select,
 .info input,
+.info select,
 .edit-grid input,
 .title-input {
   width: 100%;
@@ -803,6 +804,32 @@ td small {
 .migration-view {
   display: grid;
   gap: 14px;
+}
+
+.company-settings {
+  max-width: 860px;
+}
+
+.company-settings .panel {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+}
+
+.company-logo-preview {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.company-logo-preview img {
+  max-width: 160px;
+  max-height: 80px;
+  object-fit: contain;
+  border: 1px solid var(--bio-line);
+  border-radius: 8px;
+  padding: 6px;
+  background: #ffffff;
 }
 
 .migration-banner {

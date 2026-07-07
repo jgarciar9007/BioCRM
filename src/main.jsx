@@ -21,8 +21,10 @@ import {
   Pencil,
   Phone,
   Plus,
+  Printer,
   Save,
   Search,
+  Settings,
   ShieldCheck,
   Trash2,
   UserRound,
@@ -76,8 +78,16 @@ const api = {
   quoteContext: (accountId) => request(`/api/quote-context?accountId=${accountId}`),
   updateQuote: (id, body) => request(`/api/quotes/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteQuote: (id) => request(`/api/quotes/${id}`, { method: "DELETE" }),
+  catalogs: () => request("/api/catalogs"),
+  company: () => request("/api/company"),
+  updateCompany: (body) => request("/api/company", { method: "PUT", body: JSON.stringify(body) }),
   migration: () => request("/api/migration")
 };
+
+function withCurrent(list, current) {
+  if (!current || list.includes(current)) return list;
+  return [current, ...list];
+}
 
 const activityEntityByType = { Llamada: "calls", Reunion: "meetings", Tarea: "tasks" };
 const moneyFieldKeys = new Set(["amount", "price", "cost", "total"]);
@@ -109,6 +119,7 @@ const icons = {
   diseno: Pencil,
   plan_de_accion: ClipboardList,
   cartera: BadgeDollarSign,
+  company: Settings,
   migration: Database
 };
 
@@ -220,6 +231,7 @@ function Crm({ user, onLogout }) {
   const [summary, setSummary] = useState(null);
   const [modules, setModules] = useState([]);
   const [directory, setDirectory] = useState({ industries: [], users: [] });
+  const [catalogs, setCatalogs] = useState({});
   const [activeView, setActiveView] = useState("home");
   const [createFor, setCreateFor] = useState(null);
   const [selectedAccountId, setSelectedAccountId] = useState(null);
@@ -228,11 +240,12 @@ function Crm({ user, onLogout }) {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    Promise.all([api.summary(), api.modules(), api.directory()])
-      .then(([summaryData, moduleData, directoryData]) => {
+    Promise.all([api.summary(), api.modules(), api.directory(), api.catalogs()])
+      .then(([summaryData, moduleData, directoryData, catalogsData]) => {
         setSummary(summaryData);
         setModules(moduleData.modules);
         setDirectory(directoryData);
+        setCatalogs(catalogsData);
       })
       .catch((err) => setError(err.message));
   }, [refreshKey]);
@@ -311,6 +324,7 @@ function Crm({ user, onLogout }) {
         ) : activeView === "accounts" ? (
           <AccountWorkspace
             directory={directory}
+            catalogs={catalogs}
             selectedId={selectedAccountId}
             onSelect={setSelectedAccountId}
             onCreate={setCreateFor}
@@ -319,8 +333,10 @@ function Crm({ user, onLogout }) {
           />
         ) : activeView === "migration" ? (
           <MigrationView />
+        ) : activeView === "company" ? (
+          <CompanySettings />
         ) : (
-          <EntityView entity={activeView} module={modules.find((item) => item.id === activeView)} onQuote={setQuoteId} refreshKey={refreshKey} />
+          <EntityView entity={activeView} module={modules.find((item) => item.id === activeView)} catalogs={catalogs} onQuote={setQuoteId} refreshKey={refreshKey} />
         )}
       </section>
 
@@ -328,6 +344,8 @@ function Crm({ user, onLogout }) {
         <CreateModal
           entity={createFor}
           accountId={selectedAccountId}
+          directory={directory}
+          catalogs={catalogs}
           onClose={() => setCreateFor(null)}
           onCreated={(created) => {
             setCreateFor(null);
@@ -427,7 +445,7 @@ function HomeView({ summary, refreshKey, onQuote, onOpenAccounts }) {
   );
 }
 
-function AccountWorkspace({ directory, selectedId, onSelect, onCreate, onQuote, refreshKey }) {
+function AccountWorkspace({ directory, catalogs, selectedId, onSelect, onCreate, onQuote, refreshKey }) {
   const [accounts, setAccounts] = useState({ items: [], total: 0 });
   const [filters, setFilters] = useState({ search: "", industry: "", pageSize: 60 });
   const [selected, setSelected] = useState(null);
@@ -483,6 +501,8 @@ function AccountWorkspace({ directory, selectedId, onSelect, onCreate, onQuote, 
         {selected ? (
           <AccountDetail
             selected={selected}
+            directory={directory}
+            catalogs={catalogs}
             onCreate={onCreate}
             onQuote={onQuote}
             onOpenRecord={setRecordView}
@@ -501,6 +521,7 @@ function AccountWorkspace({ directory, selectedId, onSelect, onCreate, onQuote, 
         <RecordDrawer
           entity={recordView.entity}
           record={recordView.record}
+          catalogs={catalogs}
           onClose={() => setRecordView(null)}
           onChanged={() => {
             setRecordView(null);
@@ -512,7 +533,7 @@ function AccountWorkspace({ directory, selectedId, onSelect, onCreate, onQuote, 
   );
 }
 
-function AccountDetail({ selected, onCreate, onQuote, onOpenRecord, onDeleted }) {
+function AccountDetail({ selected, directory, catalogs, onCreate, onQuote, onOpenRecord, onDeleted }) {
   const { account, related } = selected;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(account);
@@ -566,8 +587,23 @@ function AccountDetail({ selected, onCreate, onQuote, onOpenRecord, onDeleted })
       <div className="info-grid">
         <Info icon={Phone} label="Telefono" value={account.phone} editing={editing} field="phone" draft={draft} setDraft={setDraft} />
         <Info icon={Mail} label="Email" value={account.email} editing={editing} field="email" draft={draft} setDraft={setDraft} />
-        <Info icon={MapPin} label="Ubicacion" value={[account.city, account.state, account.country].filter(Boolean).join(", ")} />
+        <SelectInfo icon={Building2} label="Tipo" value={account.type} editing={editing} field="type" draft={draft} setDraft={setDraft} options={withCurrent(catalogs.accountTypes || [], account.type)} />
+        <SelectInfo icon={Package} label="Industria" value={account.industry} editing={editing} field="industry" draft={draft} setDraft={setDraft} options={withCurrent(directory.industries || [], account.industry)} />
+        <Info icon={MapPin} label="Ciudad" value={account.city} editing={editing} field="city" draft={draft} setDraft={setDraft} />
+        <Info icon={MapPin} label="Departamento" value={account.state} editing={editing} field="state" draft={draft} setDraft={setDraft} />
+        <SelectInfo icon={MapPin} label="Pais" value={account.country} editing={editing} field="country" draft={draft} setDraft={setDraft} options={withCurrent(catalogs.countries || [], account.country)} />
       </div>
+      {editing ? (
+        <div className="form-grid">
+          <label className="wide">Direccion<textarea value={draft.address || ""} onChange={(event) => setDraft({ ...draft, address: event.target.value })} /></label>
+          <label className="wide">Descripcion<textarea value={draft.description || ""} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label>
+        </div>
+      ) : account.address || account.description ? (
+        <div className="panel">
+          {account.address ? <MiniRow title="Direccion" meta={account.address} /> : null}
+          {account.description ? <MiniRow title="Descripcion" meta={account.description} /> : null}
+        </div>
+      ) : null}
       <section className="relationship-grid">
         {[
           { key: "contacts", title: "Contactos", icon: UserRound, items: related.contacts, create: "contacts" },
@@ -607,7 +643,7 @@ function AccountDetail({ selected, onCreate, onQuote, onOpenRecord, onDeleted })
   );
 }
 
-function EntityView({ entity, module, onQuote, refreshKey }) {
+function EntityView({ entity, module, catalogs, onQuote, refreshKey }) {
   const [data, setData] = useState({ items: [], total: 0 });
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState("list");
@@ -665,6 +701,7 @@ function EntityView({ entity, module, onQuote, refreshKey }) {
         <RecordDrawer
           entity={recordView.entity}
           record={recordView.record}
+          catalogs={catalogs}
           onClose={() => setRecordView(null)}
           onChanged={() => {
             setRecordView(null);
@@ -821,6 +858,115 @@ function draftFromQuote(detail) {
   };
 }
 
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
+
+function buildQuotePrintHtml({ quote, lines, company }) {
+  const rows = lines
+    .map(
+      (line) => `
+        <tr>
+          <td>${line.number}</td>
+          <td>${escapeHtml(line.name || line.catalogProductName || "")}</td>
+          <td class="num">${formatNumber(line.quantity)}</td>
+          <td class="num">${formatMoney(line.unitPrice)}</td>
+          <td class="num">${formatMoney(line.vatAmount)}</td>
+          <td class="num">${formatMoney(line.total)}</td>
+        </tr>`
+    )
+    .join("");
+
+  const companyContact = [company.address, company.city, company.country].filter(Boolean).map(escapeHtml).join(", ");
+  const companyChannels = [company.phone, company.email, company.website].filter(Boolean).map(escapeHtml).join(" &middot; ");
+
+  return `<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>Cotizacion #${escapeHtml(quote.number)}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Arial, sans-serif; color: #10233f; margin: 0; padding: 32px; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; border-bottom: 3px solid #11a8d8; padding-bottom: 18px; margin-bottom: 24px; }
+  .header img { display: block; max-width: 180px; max-height: 70px; object-fit: contain; margin-bottom: 8px; }
+  .company-name { font-size: 20px; font-weight: 800; color: #0b2545; margin: 0 0 4px; }
+  .company-meta { font-size: 12px; color: #5c7084; line-height: 1.6; }
+  .doc-title { text-align: right; white-space: nowrap; }
+  .doc-title h1 { margin: 0; font-size: 26px; color: #0b2545; letter-spacing: .03em; }
+  .doc-title p { margin: 4px 0 0; color: #5c7084; font-size: 13px; }
+  .parties { display: flex; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
+  .party { flex: 1; }
+  .party h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #11a8d8; }
+  .party p { margin: 2px 0; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+  th { background: #0b2545; color: #fff; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; padding: 10px 8px; text-align: left; }
+  th.num { text-align: right; }
+  td { padding: 9px 8px; border-bottom: 1px solid #e5edf3; font-size: 13px; }
+  td.num { text-align: right; }
+  tbody tr:nth-child(even) { background: #f7fbfd; }
+  .totals { margin-left: auto; width: 280px; }
+  .totals div { display: flex; justify-content: space-between; padding: 6px 0; font-size: 13px; }
+  .totals .grand { border-top: 2px solid #0b2545; margin-top: 4px; padding-top: 10px; font-size: 17px; font-weight: 800; color: #0b2545; }
+  .notes { margin-top: 24px; font-size: 13px; color: #3c4d45; }
+  .notes h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #11a8d8; margin-bottom: 6px; }
+  .footer { margin-top: 40px; text-align: center; font-size: 11px; color: #96a3ad; }
+  @page { margin: 16mm; }
+  @media print { body { padding: 0; } }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      ${company.logo ? `<img src="${company.logo}" alt="logo" />` : ""}
+      <div class="company-name">${escapeHtml(company.name || "")}</div>
+      <div class="company-meta">
+        ${company.taxId ? `NIT ${escapeHtml(company.taxId)}<br/>` : ""}
+        ${companyContact}${companyContact ? "<br/>" : ""}
+        ${companyChannels}
+      </div>
+    </div>
+    <div class="doc-title">
+      <h1>COTIZACION</h1>
+      <p>No. ${escapeHtml(quote.number)}</p>
+      <p>Fecha: ${escapeHtml(shortDate(quote.createdAt) || "-")}</p>
+      <p>Vence: ${escapeHtml(shortDate(quote.expiration) || "Sin vencimiento")}</p>
+    </div>
+  </div>
+  <div class="parties">
+    <div class="party">
+      <h3>Cliente</h3>
+      <p><strong>${escapeHtml(quote.accountName || "Sin cliente")}</strong></p>
+      <p>${escapeHtml(quote.billingAddress || "Sin direccion")}</p>
+    </div>
+    <div class="party">
+      <h3>Entrega</h3>
+      <p>${escapeHtml(quote.shippingAddress || quote.billingAddress || "Sin direccion")}</p>
+    </div>
+    <div class="party">
+      <h3>Condiciones</h3>
+      <p>Forma de pago: ${escapeHtml(quote.paymentMethod || "N/A")}</p>
+      <p>Tiempo de entrega: ${escapeHtml(quote.deliveryTime || "N/A")}</p>
+    </div>
+  </div>
+  <table>
+    <thead>
+      <tr><th>#</th><th>Producto</th><th class="num">Cant.</th><th class="num">Unitario</th><th class="num">IVA</th><th class="num">Total</th></tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="totals">
+    <div><span>Subtotal</span><span>${formatMoney(quote.subtotal)}</span></div>
+    <div><span>IVA</span><span>${formatMoney(quote.tax)}</span></div>
+    ${Number(quote.discount || 0) ? `<div><span>Descuento</span><span>-${formatMoney(quote.discount)}</span></div>` : ""}
+    <div class="grand"><span>Total</span><span>${formatMoney(quote.total)}</span></div>
+  </div>
+  ${quote.observations ? `<div class="notes"><h3>Observaciones</h3><p>${escapeHtml(quote.observations)}</p></div>` : ""}
+  <div class="footer">Documento generado por BIOCRM &middot; ${escapeHtml(company.name || "")}</div>
+</body>
+</html>`;
+}
+
 function QuoteDrawer({ id, onClose, onChanged }) {
   const [detail, setDetail] = useState(null);
   const [editing, setEditing] = useState(false);
@@ -877,6 +1023,26 @@ function QuoteDrawer({ id, onClose, onChanged }) {
     onClose();
   }
 
+  async function print() {
+    setError("");
+    let company;
+    try {
+      company = await api.company();
+    } catch {
+      company = { name: "Empresa" };
+    }
+    const win = window.open("", "_blank");
+    if (!win) {
+      setError("El navegador bloqueo la ventana de impresion. Habilita las ventanas emergentes para este sitio.");
+      return;
+    }
+    win.document.open();
+    win.document.write(buildQuotePrintHtml({ quote, lines: detail.lines, company }));
+    win.document.close();
+    win.focus();
+    setTimeout(() => win.print(), 300);
+  }
+
   const preview = editing
     ? draft.lines.reduce(
         (acc, line) => ({
@@ -905,6 +1071,11 @@ function QuoteDrawer({ id, onClose, onChanged }) {
           </p>
         </div>
         <div className="action-row">
+          {!editing ? (
+            <button className="icon-button" onClick={print} title="Imprimir cotizacion">
+              <Printer size={18} />
+            </button>
+          ) : null}
           <button className="icon-button" onClick={() => (editing ? save() : setEditing(true))} title={editing ? "Guardar" : "Editar"} disabled={saving}>
             {editing ? <Save size={18} /> : <Pencil size={18} />}
           </button>
@@ -1000,21 +1171,35 @@ function QuoteDrawer({ id, onClose, onChanged }) {
   );
 }
 
-const recordFieldsByEntity = {
-  contacts: [["name", "Nombre"], ["title", "Cargo"], ["department", "Departamento"], ["phone", "Telefono"], ["email", "Email"]],
-  opportunities: [["name", "Nombre"], ["stage", "Etapa", "select", opportunityStages], ["type", "Tipo"], ["amount", "Monto", "number"], ["probability", "Probabilidad %", "number"], ["closeDate", "Cierre esperado", "date"]],
-  leads: [["name", "Nombre"], ["accountName", "Empresa"], ["status", "Estado"], ["source", "Fuente"], ["phone", "Telefono"], ["email", "Email"], ["city", "Ciudad"], ["country", "Pais"]],
-  products: [["name", "Producto"], ["partNumber", "Codigo"], ["type", "Tipo"], ["price", "Precio", "number"], ["cost", "Costo", "number"]],
-  cases: [["name", "Asunto"], ["status", "Estado", "select", caseStatuses], ["priority", "Prioridad"], ["type", "Tipo"], ["description", "Descripcion", "textarea"]],
-  notes: [["title", "Titulo"], ["description", "Nota", "textarea"]],
-  calls: [["title", "Asunto"], ["status", "Estado", "select", meetingCallStatuses], ["dateStart", "Inicio", "datetime-local"], ["durationMinutes", "Duracion minutos", "number"], ["description", "Descripcion", "textarea"]],
-  meetings: [["title", "Asunto"], ["status", "Estado", "select", meetingCallStatuses], ["dateStart", "Inicio", "datetime-local"], ["durationMinutes", "Duracion minutos", "number"], ["description", "Descripcion", "textarea"]],
-  tasks: [["title", "Asunto"], ["status", "Estado", "select", taskStatuses], ["priority", "Prioridad", "select", taskPriorities], ["dateStart", "Inicio", "datetime-local"], ["dueDate", "Vence", "date"], ["description", "Descripcion", "textarea"]],
-  accion: [["name", "Nombre"], ["status", "Estado"], ["type", "Tipo"], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"], ["total", "Total", "number"]],
-  diseno: [["name", "Nombre"], ["status", "Estado"], ["type", "Tipo"], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"], ["total", "Total", "number"]],
-  plan_de_accion: [["name", "Nombre"], ["status", "Estado"], ["type", "Tipo"], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"], ["total", "Total", "number"]],
-  cartera: [["name", "Nombre"], ["status", "Estado"], ["type", "Tipo"], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"], ["total", "Total", "number"]]
-};
+function recordFieldsFor(entity, catalogs) {
+  const c = catalogs || {};
+  switch (entity) {
+    case "contacts":
+      return [["name", "Nombre"], ["title", "Cargo"], ["department", "Departamento", "select", c.departments || []], ["phone", "Telefono"], ["email", "Email"]];
+    case "opportunities":
+      return [["name", "Nombre"], ["stage", "Etapa", "select", opportunityStages], ["type", "Tipo"], ["amount", "Monto", "number"], ["probability", "Probabilidad %", "number"], ["closeDate", "Cierre esperado", "date"]];
+    case "leads":
+      return [["name", "Nombre"], ["accountName", "Empresa"], ["status", "Estado", "select", c.leadStatuses || []], ["source", "Fuente", "select", c.leadSources || []], ["phone", "Telefono"], ["email", "Email"], ["city", "Ciudad"], ["country", "Pais", "select", c.countries || []]];
+    case "products":
+      return [["name", "Producto"], ["partNumber", "Codigo"], ["type", "Tipo", "select", c.productTypes || []], ["price", "Precio", "number"], ["cost", "Costo", "number"]];
+    case "cases":
+      return [["name", "Asunto"], ["status", "Estado", "select", caseStatuses], ["priority", "Prioridad"], ["type", "Tipo"], ["description", "Descripcion", "textarea"]];
+    case "notes":
+      return [["title", "Titulo"], ["description", "Nota", "textarea"]];
+    case "calls":
+      return [["title", "Asunto"], ["status", "Estado", "select", meetingCallStatuses], ["dateStart", "Inicio", "datetime-local"], ["durationMinutes", "Duracion minutos", "number"], ["description", "Descripcion", "textarea"]];
+    case "meetings":
+      return [["title", "Asunto"], ["status", "Estado", "select", meetingCallStatuses], ["dateStart", "Inicio", "datetime-local"], ["durationMinutes", "Duracion minutos", "number"], ["description", "Descripcion", "textarea"]];
+    case "tasks":
+      return [["title", "Asunto"], ["status", "Estado", "select", taskStatuses], ["priority", "Prioridad", "select", taskPriorities], ["dateStart", "Inicio", "datetime-local"], ["dueDate", "Vence", "date"], ["description", "Descripcion", "textarea"]];
+    case "diseno":
+      return [["name", "Nombre"], ["status", "Estado", "select", c.disenoStatuses || []], ["type", "Tipo"], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"]];
+    case "cartera":
+      return [["name", "Nombre"], ["status", "Estado", "select", c.carteraStatuses || []], ["type", "Plazo (dias)", "select", c.carteraTypes || []], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"], ["total", "Total", "number"]];
+    default:
+      return [["name", "Nombre"], ["status", "Estado"], ["type", "Tipo"], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"], ["total", "Total", "number"]];
+  }
+}
 
 function formatFieldValue(key, value, type) {
   if (value === null || value === undefined || value === "") return "Sin dato";
@@ -1023,7 +1208,7 @@ function formatFieldValue(key, value, type) {
   return String(value);
 }
 
-function RecordDrawer({ entity, record, onClose, onChanged }) {
+function RecordDrawer({ entity, record, catalogs, onClose, onChanged }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(record);
   const [saving, setSaving] = useState(false);
@@ -1064,7 +1249,7 @@ function RecordDrawer({ entity, record, onClose, onChanged }) {
     }
   }
 
-  const fields = recordFieldsByEntity[entity] || [];
+  const fields = recordFieldsFor(entity, catalogs);
   const title = record.name || record.title || "Registro";
 
   return (
@@ -1094,7 +1279,8 @@ function RecordDrawer({ entity, record, onClose, onChanged }) {
               <strong className="static-value">{formatFieldValue(key, draft[key], type)}</strong>
             ) : type === "select" ? (
               <select value={draft[key] || ""} onChange={(event) => update(key, event.target.value)}>
-                {options.map((option) => <option key={option}>{option}</option>)}
+                <option value="">Selecciona</option>
+                {withCurrent(options, draft[key]).map((option) => <option key={option}>{option}</option>)}
               </select>
             ) : type === "textarea" ? (
               <textarea value={draft[key] || ""} onChange={(event) => update(key, event.target.value)} />
@@ -1108,7 +1294,7 @@ function RecordDrawer({ entity, record, onClose, onChanged }) {
   );
 }
 
-function CreateModal({ entity, accountId, onClose, onCreated }) {
+function CreateModal({ entity, accountId, directory, catalogs, onClose, onCreated }) {
   const [form, setForm] = useState({ accountId, country: "Colombia", lines: [{ name: "", quantity: 1, unitPrice: 0, vatAmount: 0 }] });
   const [accountName, setAccountName] = useState("");
   const [saving, setSaving] = useState(false);
@@ -1160,7 +1346,7 @@ function CreateModal({ entity, accountId, onClose, onCreated }) {
         {entity === "quotes" ? (
           <QuoteForm form={form} setForm={setForm} update={update} accountName={accountName} onPickAccount={pickAccount} />
         ) : (
-          <EntityForm entity={entity} form={form} update={update} accountName={accountName} onPickAccount={pickAccount} />
+          <EntityForm entity={entity} form={form} update={update} accountName={accountName} onPickAccount={pickAccount} directory={directory} catalogs={catalogs} />
         )}
         {error ? <div className="alert">{error}</div> : null}
         <div className="modal-actions">
@@ -1242,19 +1428,19 @@ function ClientField({ entity, form, accountName, onPickAccount }) {
   );
 }
 
-function EntityForm({ entity, form, update, accountName, onPickAccount }) {
+function EntityForm({ entity, form, update, accountName, onPickAccount, directory, catalogs }) {
   const client = <ClientField entity={entity} form={form} accountName={accountName} onPickAccount={onPickAccount} />;
 
   if (entity === "accounts") {
     return (
       <div className="form-grid">
         <label>Nombre<input value={form.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
-        <label>Tipo<input value={form.type || ""} onChange={(event) => update("type", event.target.value)} /></label>
-        <label>Industria<input value={form.industry || ""} onChange={(event) => update("industry", event.target.value)} /></label>
+        <label>Tipo<select value={form.type || ""} onChange={(event) => update("type", event.target.value)}><option value="">Selecciona tipo</option>{withCurrent(catalogs.accountTypes || [], form.type).map((type) => <option key={type}>{type}</option>)}</select></label>
+        <label>Industria<select value={form.industry || ""} onChange={(event) => update("industry", event.target.value)}><option value="">Selecciona industria</option>{withCurrent(directory.industries || [], form.industry).map((industry) => <option key={industry}>{industry}</option>)}</select></label>
         <label>Telefono<input value={form.phone || ""} onChange={(event) => update("phone", event.target.value)} /></label>
         <label>Email<input type="email" value={form.email || ""} onChange={(event) => update("email", event.target.value)} /></label>
         <label>Ciudad<input value={form.city || ""} onChange={(event) => update("city", event.target.value)} /></label>
-        <label>Pais<input value={form.country || ""} onChange={(event) => update("country", event.target.value)} /></label>
+        <label>Pais<select value={form.country || "Colombia"} onChange={(event) => update("country", event.target.value)}>{withCurrent(catalogs.countries || [], form.country).map((country) => <option key={country}>{country}</option>)}</select></label>
         <label className="wide">Direccion<textarea value={form.address || ""} onChange={(event) => update("address", event.target.value)} /></label>
         <label className="wide">Descripcion<textarea value={form.description || ""} onChange={(event) => update("description", event.target.value)} /></label>
       </div>
@@ -1267,7 +1453,7 @@ function EntityForm({ entity, form, update, accountName, onPickAccount }) {
         {client}
         <label>Nombre<input value={form.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
         <label>Cargo<input value={form.title || ""} onChange={(event) => update("title", event.target.value)} /></label>
-        <label>Departamento<input value={form.department || ""} onChange={(event) => update("department", event.target.value)} /></label>
+        <label>Departamento<select value={form.department || ""} onChange={(event) => update("department", event.target.value)}><option value="">Selecciona departamento</option>{withCurrent(catalogs.departments || [], form.department).map((department) => <option key={department}>{department}</option>)}</select></label>
         <label>Telefono<input value={form.phone || ""} onChange={(event) => update("phone", event.target.value)} /></label>
         <label>Email<input type="email" value={form.email || ""} onChange={(event) => update("email", event.target.value)} /></label>
       </div>
@@ -1330,7 +1516,7 @@ function EntityForm({ entity, form, update, accountName, onPickAccount }) {
       <div className="form-grid">
         <label>Producto<input value={form.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
         <label>Codigo<input value={form.partNumber || ""} onChange={(event) => update("partNumber", event.target.value)} /></label>
-        <label>Tipo<input value={form.type || ""} onChange={(event) => update("type", event.target.value)} /></label>
+        <label>Tipo<select value={form.type || ""} onChange={(event) => update("type", event.target.value)}><option value="">Selecciona tipo</option>{withCurrent(catalogs.productTypes || [], form.type).map((type) => <option key={type}>{type}</option>)}</select></label>
         <label>Precio<input type="number" min="0" step="0.01" value={form.price || ""} onChange={(event) => update("price", event.target.value)} /></label>
         <label>Costo<input type="number" min="0" step="0.01" value={form.cost || ""} onChange={(event) => update("cost", event.target.value)} /></label>
       </div>
@@ -1342,12 +1528,39 @@ function EntityForm({ entity, form, update, accountName, onPickAccount }) {
       <div className="form-grid">
         <label>Nombre<input value={form.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
         <label>Empresa<input value={form.accountName || ""} onChange={(event) => update("accountName", event.target.value)} /></label>
-        <label>Estado<input value={form.status || "New"} onChange={(event) => update("status", event.target.value)} /></label>
-        <label>Fuente<input value={form.source || ""} onChange={(event) => update("source", event.target.value)} /></label>
+        <label>Estado<select value={form.status || "New"} onChange={(event) => update("status", event.target.value)}>{withCurrent(catalogs.leadStatuses || [], form.status).map((status) => <option key={status}>{status}</option>)}</select></label>
+        <label>Fuente<select value={form.source || ""} onChange={(event) => update("source", event.target.value)}><option value="">Selecciona fuente</option>{withCurrent(catalogs.leadSources || [], form.source).map((source) => <option key={source}>{source}</option>)}</select></label>
         <label>Telefono<input value={form.phone || ""} onChange={(event) => update("phone", event.target.value)} /></label>
         <label>Email<input type="email" value={form.email || ""} onChange={(event) => update("email", event.target.value)} /></label>
         <label>Ciudad<input value={form.city || ""} onChange={(event) => update("city", event.target.value)} /></label>
-        <label>Pais<input value={form.country || ""} onChange={(event) => update("country", event.target.value)} /></label>
+        <label>Pais<select value={form.country || "Colombia"} onChange={(event) => update("country", event.target.value)}>{withCurrent(catalogs.countries || [], form.country).map((country) => <option key={country}>{country}</option>)}</select></label>
+      </div>
+    );
+  }
+
+  if (entity === "diseno") {
+    return (
+      <div className="form-grid">
+        {client}
+        <label>Nombre<input value={form.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
+        <label>Estado<select value={form.status || catalogs.disenoStatuses?.[0] || ""} onChange={(event) => update("status", event.target.value)}>{withCurrent(catalogs.disenoStatuses || [], form.status).map((status) => <option key={status}>{status}</option>)}</select></label>
+        <label>Tipo<input value={form.type || ""} onChange={(event) => update("type", event.target.value)} /></label>
+        <label>Inicio<input type="date" value={form.startDate || ""} onChange={(event) => update("startDate", event.target.value)} /></label>
+        <label>Fin<input type="date" value={form.endDate || ""} onChange={(event) => update("endDate", event.target.value)} /></label>
+      </div>
+    );
+  }
+
+  if (entity === "cartera") {
+    return (
+      <div className="form-grid">
+        {client}
+        <label>Nombre<input value={form.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
+        <label>Estado<select value={form.status || catalogs.carteraStatuses?.[0] || ""} onChange={(event) => update("status", event.target.value)}>{withCurrent(catalogs.carteraStatuses || [], form.status).map((status) => <option key={status}>{status}</option>)}</select></label>
+        <label>Plazo (dias)<select value={form.type || ""} onChange={(event) => update("type", event.target.value)}><option value="">Selecciona plazo</option>{withCurrent(catalogs.carteraTypes || [], form.type).map((type) => <option key={type}>{type}</option>)}</select></label>
+        <label>Inicio<input type="date" value={form.startDate || ""} onChange={(event) => update("startDate", event.target.value)} /></label>
+        <label>Fin<input type="date" value={form.endDate || ""} onChange={(event) => update("endDate", event.target.value)} /></label>
+        <label>Total<input type="number" min="0" step="0.01" value={form.total || ""} onChange={(event) => update("total", event.target.value)} /></label>
       </div>
     );
   }
@@ -1436,6 +1649,23 @@ function Info({ icon: Icon, label, value, editing, field, draft, setDraft }) {
   );
 }
 
+function SelectInfo({ icon: Icon, label, value, editing, field, draft, setDraft, options }) {
+  return (
+    <div className="info">
+      <Icon size={18} />
+      <span>{label}</span>
+      {editing ? (
+        <select value={draft[field] || ""} onChange={(event) => setDraft({ ...draft, [field]: event.target.value })}>
+          <option value="">Selecciona</option>
+          {options.map((option) => <option key={option}>{option}</option>)}
+        </select>
+      ) : (
+        <strong>{value || "Sin dato"}</strong>
+      )}
+    </div>
+  );
+}
+
 function Panel({ title, count, children }) {
   return (
     <div className="panel">
@@ -1454,6 +1684,80 @@ function MiniRow({ title, meta }) {
       <strong>{title}</strong>
       <span>{meta || "Sin detalle"}</span>
     </div>
+  );
+}
+
+function CompanySettings() {
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.company().then(setDraft);
+  }, []);
+
+  function update(key, value) {
+    setDraft((current) => ({ ...current, [key]: value }));
+    setSaved(false);
+  }
+
+  function onLogoChange(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => update("logo", String(reader.result));
+    reader.readAsDataURL(file);
+  }
+
+  async function save(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await api.updateCompany(draft);
+      setDraft(updated);
+      setSaved(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!draft) return null;
+
+  return (
+    <section className="company-settings">
+      <form className="panel" onSubmit={save}>
+        <div className="panel-title">
+          <strong>Datos de la empresa emisora</strong>
+          <span>Se usan para imprimir las cotizaciones</span>
+        </div>
+        <div className="form-grid">
+          <label>Nombre<input value={draft.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
+          <label>NIT / Identificacion fiscal<input value={draft.taxId || ""} onChange={(event) => update("taxId", event.target.value)} /></label>
+          <label>Telefono<input value={draft.phone || ""} onChange={(event) => update("phone", event.target.value)} /></label>
+          <label>Email<input type="email" value={draft.email || ""} onChange={(event) => update("email", event.target.value)} /></label>
+          <label>Sitio web<input value={draft.website || ""} onChange={(event) => update("website", event.target.value)} /></label>
+          <label>Ciudad<input value={draft.city || ""} onChange={(event) => update("city", event.target.value)} /></label>
+          <label>Pais<input value={draft.country || ""} onChange={(event) => update("country", event.target.value)} /></label>
+          <label className="wide">Direccion<input value={draft.address || ""} onChange={(event) => update("address", event.target.value)} /></label>
+          <label className="wide">Logo (aparece en la cotizacion impresa)<input type="file" accept="image/*" onChange={onLogoChange} /></label>
+          {draft.logo ? (
+            <div className="wide company-logo-preview">
+              <img src={draft.logo} alt="Logo" />
+              <button type="button" className="mini-action" onClick={() => update("logo", "")}>Quitar logo</button>
+            </div>
+          ) : null}
+        </div>
+        {error ? <div className="alert">{error}</div> : null}
+        <div className="modal-actions">
+          {saved ? <span className="form-note">Datos guardados</span> : <span />}
+          <button className="primary-button" disabled={saving}><Save size={17} /><span>{saving ? "Guardando" : "Guardar"}</span></button>
+        </div>
+      </form>
+    </section>
   );
 }
 
