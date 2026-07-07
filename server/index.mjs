@@ -37,19 +37,15 @@ const modules = [
   { id: "documents", label: "Documentos", group: "Colaboracion" },
   { id: "emails", label: "Correos", group: "Colaboracion", genericModule: "Correos" },
   { id: "projects", label: "Proyectos", group: "Colaboracion" },
-  { id: "campaigns", label: "Campanas", group: "Marketing", genericModule: "Campanas" },
   { id: "calls", label: "Llamadas", group: "Actividades", activityType: "Llamada" },
   { id: "meetings", label: "Reuniones", group: "Actividades", activityType: "Reunion" },
   { id: "tasks", label: "Tareas", group: "Actividades", activityType: "Tarea" },
   { id: "notes", label: "Notas", group: "Colaboracion" },
   { id: "cases", label: "Casos", group: "Soporte" },
-  { id: "targets", label: "Publico Objetivo", group: "Marketing", genericModule: "Publico Objetivo" },
-  { id: "target_lists", label: "Publico Objetivo - Listas", group: "Marketing", genericModule: "Publico Objetivo - Listas" },
-  { id: "contracts", label: "Contratos", group: "Ventas", genericModule: "Contratos" },
   { id: "calendar", label: "Calendario", group: "Actividades", allActivities: true },
-  { id: "accion", label: "Accion", group: "Personalizados", genericModule: "acciones" },
-  { id: "diseno", label: "Diseno", group: "Personalizados", genericModule: "disenos" },
-  { id: "plan_de_accion", label: "Plan_De_Accion", group: "Personalizados", genericModule: "planesAccion" },
+  { id: "accion", label: "Acciones", group: "Personalizados", genericModule: "acciones" },
+  { id: "diseno", label: "Disenos", group: "Personalizados", genericModule: "disenos" },
+  { id: "plan_de_accion", label: "Planes de accion", group: "Personalizados", genericModule: "planesAccion" },
   { id: "cartera", label: "Cartera", group: "Personalizados", genericModule: "cartera" },
   { id: "migration", label: "Migracion", group: "Sistema" }
 ];
@@ -205,7 +201,7 @@ function genericAccountRows(accountId, recordModule, linkModule, limit = 100) {
     `SELECT g.*, a.name AS account_name
      FROM generic_records g
      LEFT JOIN accounts a ON a.id = g.account_id
-     WHERE g.module = ? AND (g.account_id = ? OR ${link.sql})
+     WHERE g.deleted = 0 AND g.module = ? AND (g.account_id = ? OR ${link.sql})
      ORDER BY COALESCE(g.start_date, g.end_date, g.name) DESC
      LIMIT ${limit}`,
     [recordModule, accountId, ...link.params(accountId)]
@@ -273,10 +269,29 @@ app.get("/api/modules", (req, res) => {
   res.json({ modules });
 });
 
+function liveCount(sql) {
+  return db.prepare(sql).get().c;
+}
+
 app.get("/api/summary", (req, res) => {
-  const summary = parseJson(get("SELECT value FROM app_meta WHERE key = 'summary'")?.value, {});
-  const topTables = all("SELECT table_name, rows_count AS rows FROM migration_tables ORDER BY rows_count DESC LIMIT 18").map((row) => ({ table: row.tableName, rows: row.rows }));
-  res.json({ meta: { sourceFile: get("SELECT value FROM app_meta WHERE key = 'source_file'")?.value }, summary, topTables });
+  const summary = {
+    accounts: liveCount("SELECT COUNT(*) c FROM accounts"),
+    activeAccounts: liveCount("SELECT COUNT(*) c FROM accounts WHERE deleted = 0"),
+    contacts: liveCount("SELECT COUNT(*) c FROM contacts WHERE deleted = 0"),
+    opportunities: liveCount("SELECT COUNT(*) c FROM opportunities WHERE deleted = 0"),
+    activities: liveCount("SELECT COUNT(*) c FROM activities WHERE deleted = 0"),
+    quotes: liveCount("SELECT COUNT(*) c FROM quotes WHERE deleted = 0"),
+    quoteLines: liveCount("SELECT COUNT(*) c FROM quote_lines WHERE deleted = 0"),
+    invoices: liveCount("SELECT COUNT(*) c FROM invoices WHERE deleted = 0"),
+    products: liveCount("SELECT COUNT(*) c FROM products WHERE deleted = 0"),
+    cases: liveCount("SELECT COUNT(*) c FROM cases WHERE deleted = 0"),
+    leads: liveCount("SELECT COUNT(*) c FROM leads WHERE deleted = 0"),
+    users: liveCount("SELECT COUNT(*) c FROM users"),
+    documents: liveCount("SELECT COUNT(*) c FROM documents WHERE deleted = 0"),
+    projects: liveCount("SELECT COUNT(*) c FROM projects WHERE deleted = 0"),
+    entityLinks: liveCount("SELECT COUNT(*) c FROM entity_links WHERE deleted = 0")
+  };
+  res.json({ meta: { sourceFile: get("SELECT value FROM app_meta WHERE key = 'source_file'")?.value }, summary });
 });
 
 app.get("/api/recent-work", (req, res) => {
@@ -387,8 +402,7 @@ app.get("/api/recent-work", (req, res) => {
 
 app.get("/api/directory", (req, res) => {
   res.json({
-    industries: all("SELECT DISTINCT industry FROM accounts WHERE industry IS NOT NULL AND industry <> '' ORDER BY industry").map((row) => row.industry),
-    statuses: all("SELECT DISTINCT status FROM accounts WHERE status IS NOT NULL AND status <> '' ORDER BY status").map((row) => row.status),
+    industries: all("SELECT DISTINCT industry FROM accounts WHERE deleted = 0 AND industry IS NOT NULL AND industry <> '' ORDER BY industry").map((row) => row.industry),
     users: all("SELECT id, user_name, full_name, status, title, department, email, phone FROM users ORDER BY full_name"),
     currencies: hasTable("currencies") ? all("SELECT id, name, symbol, iso4217, conversion_rate, status FROM currencies WHERE deleted = 0 ORDER BY name") : [],
     quoteTemplates: hasTable("quote_templates") ? all("SELECT id, name, type, active FROM quote_templates WHERE deleted = 0 AND active = 1 ORDER BY name") : []
@@ -399,7 +413,7 @@ app.get("/api/accounts", (req, res) => {
   const config = entityConfig.accounts;
   const search = searchWhere(config, req.query.search || "");
   const filters = [...search.params];
-  let where = search.sql;
+  let where = `${search.sql} AND deleted = 0`;
   for (const [column, value] of [
     ["industry", req.query.industry],
     ["status", req.query.status],
@@ -427,12 +441,13 @@ app.get("/api/accounts/:id", (req, res) => {
   res.json({
     account,
     related: {
-      contacts: all(`SELECT DISTINCT c.* FROM contacts c WHERE c.account_id = ? OR c.account_ids_json LIKE ? OR ${contactLink.sql} ORDER BY c.name LIMIT 100`, [accountId, needle, ...contactLink.params(accountId)]),
-      opportunities: all(`SELECT DISTINCT o.* FROM opportunities o WHERE o.account_ids_json LIKE ? OR ${opportunityLink.sql} ORDER BY o.updated_at DESC LIMIT 100`, [needle, ...opportunityLink.params(accountId)]),
+      contacts: all(`SELECT DISTINCT c.* FROM contacts c WHERE c.deleted = 0 AND (c.account_id = ? OR c.account_ids_json LIKE ? OR ${contactLink.sql}) ORDER BY c.name LIMIT 100`, [accountId, needle, ...contactLink.params(accountId)]),
+      opportunities: all(`SELECT DISTINCT o.* FROM opportunities o WHERE o.deleted = 0 AND (o.account_ids_json LIKE ? OR ${opportunityLink.sql}) ORDER BY o.updated_at DESC LIMIT 100`, [needle, ...opportunityLink.params(accountId)]),
       activities: all(
         `SELECT DISTINCT act.*
          FROM activities act
-         WHERE act.parent_id = ?
+         WHERE act.deleted = 0
+           AND (act.parent_id = ?
             OR act.id IN (
               SELECT el.source_id
               FROM entity_links el
@@ -441,10 +456,10 @@ app.get("/api/accounts/:id", (req, res) => {
                 AND (
                   (el.target_module = 'accounts' AND el.target_id = ?)
                   OR (el.target_module = 'contacts' AND el.target_id IN (
-                    SELECT c.id FROM contacts c WHERE c.account_id = ? OR c.account_ids_json LIKE ? OR ${contactLink.sql}
+                    SELECT c.id FROM contacts c WHERE c.deleted = 0 AND (c.account_id = ? OR c.account_ids_json LIKE ? OR ${contactLink.sql})
                   ))
                 )
-            )
+            ))
          ORDER BY COALESCE(act.date_start, act.due_date) DESC
          LIMIT 100`,
         [accountId, accountId, accountId, needle, ...contactLink.params(accountId)]
@@ -452,19 +467,21 @@ app.get("/api/accounts/:id", (req, res) => {
       notes: all(
         `SELECT DISTINCT n.*
          FROM notes n
-         WHERE n.parent_id = ?
-            OR n.contact_id IN (SELECT c.id FROM contacts c WHERE c.account_id = ? OR c.account_ids_json LIKE ? OR ${contactLink.sql})
+         WHERE n.deleted = 0
+           AND (n.parent_id = ?
+            OR n.contact_id IN (SELECT c.id FROM contacts c WHERE c.deleted = 0 AND (c.account_id = ? OR c.account_ids_json LIKE ? OR ${contactLink.sql})))
          ORDER BY n.updated_at DESC
          LIMIT 100`,
         [accountId, accountId, needle, ...contactLink.params(accountId)]
       ),
-      quotes: all(`SELECT DISTINCT q.* FROM quotes q WHERE q.account_id = ? OR ${quoteLink.sql} ORDER BY CAST(q.number AS INTEGER) DESC LIMIT 100`, [accountId, ...quoteLink.params(accountId)]),
-      invoices: all(`SELECT DISTINCT i.* FROM invoices i WHERE i.account_id = ? OR ${invoiceLink.sql} ORDER BY i.created_at DESC LIMIT 100`, [accountId, ...invoiceLink.params(accountId)]),
-      cases: all(`SELECT DISTINCT cs.* FROM cases cs WHERE cs.account_id = ? OR ${caseLink.sql} ORDER BY cs.updated_at DESC LIMIT 100`, [accountId, ...caseLink.params(accountId)]),
+      quotes: all(`SELECT DISTINCT q.* FROM quotes q WHERE q.deleted = 0 AND (q.account_id = ? OR ${quoteLink.sql}) ORDER BY CAST(q.number AS INTEGER) DESC LIMIT 100`, [accountId, ...quoteLink.params(accountId)]),
+      invoices: all(`SELECT DISTINCT i.* FROM invoices i WHERE i.deleted = 0 AND (i.account_id = ? OR ${invoiceLink.sql}) ORDER BY i.created_at DESC LIMIT 100`, [accountId, ...invoiceLink.params(accountId)]),
+      cases: all(`SELECT DISTINCT cs.* FROM cases cs WHERE cs.deleted = 0 AND (cs.account_id = ? OR ${caseLink.sql}) ORDER BY cs.updated_at DESC LIMIT 100`, [accountId, ...caseLink.params(accountId)]),
       documents: all(
         `SELECT DISTINCT d.*
          FROM documents d
-         WHERE d.legacy_json LIKE ?
+         WHERE d.deleted = 0
+           AND (d.legacy_json LIKE ?
             OR d.id IN (
               SELECT el.source_id
               FROM entity_links el
@@ -473,17 +490,16 @@ app.get("/api/accounts/:id", (req, res) => {
                 AND (
                   (el.target_module = 'accounts' AND el.target_id = ?)
                   OR (el.target_module = 'cases' AND el.target_id IN (SELECT id FROM cases WHERE account_id = ?))
-                  OR (el.target_module = 'contacts' AND el.target_id IN (SELECT c.id FROM contacts c WHERE c.account_id = ? OR c.account_ids_json LIKE ? OR ${contactLink.sql}))
+                  OR (el.target_module = 'contacts' AND el.target_id IN (SELECT c.id FROM contacts c WHERE c.deleted = 0 AND (c.account_id = ? OR c.account_ids_json LIKE ? OR ${contactLink.sql})))
                   OR (el.target_module = 'opportunities' AND el.target_id IN (SELECT o.id FROM opportunities o WHERE o.account_ids_json LIKE ? OR ${opportunityLink.sql}))
                 )
-            )
+            ))
          ORDER BY d.updated_at DESC
          LIMIT 100`,
         [needle, accountId, accountId, accountId, needle, ...contactLink.params(accountId), needle, ...opportunityLink.params(accountId)]
       ),
-      projects: all(`SELECT DISTINCT p.* FROM projects p WHERE ${projectLink.sql} ORDER BY p.updated_at DESC LIMIT 100`, projectLink.params(accountId)),
+      projects: all(`SELECT DISTINCT p.* FROM projects p WHERE p.deleted = 0 AND ${projectLink.sql} ORDER BY p.updated_at DESC LIMIT 100`, projectLink.params(accountId)),
       emails: genericAccountRows(accountId, "Correos", "emails"),
-      contracts: genericAccountRows(accountId, "Contratos", "contracts"),
       disenos: genericAccountRows(accountId, "disenos", "disenos"),
       cartera: genericAccountRows(accountId, "cartera", "cartera"),
       acciones: genericAccountRows(accountId, "acciones", "acciones"),
@@ -536,6 +552,14 @@ app.patch("/api/accounts/:id", (req, res) => {
   res.json(after);
 });
 
+app.delete("/api/accounts/:id", (req, res) => {
+  const before = get("SELECT * FROM accounts WHERE id = ?", [req.params.id]);
+  if (!before) return res.status(404).json({ error: "Cuenta no encontrada" });
+  run("UPDATE accounts SET deleted = 1, status = 'Eliminado', updated_at = ?, local_updated_at = ? WHERE id = ?", [nowIso(), nowIso(), req.params.id]);
+  audit(req, "delete", "accounts", req.params.id, before, null);
+  res.json({ ok: true });
+});
+
 app.get("/api/entities/:entity", (req, res) => {
   const config = getEntityConfig(req.params.entity);
   if (!config) return res.status(404).json({ error: "Entidad no disponible" });
@@ -544,57 +568,57 @@ app.get("/api/entities/:entity", (req, res) => {
     const parentName = "COALESCE(a.name, c.name, cs.name, o.name, l.name) AS parent_name";
     const search = req.query.search ? "AND (act.title LIKE ? OR act.status LIKE ? OR act.description LIKE ? OR a.name LIKE ? OR c.name LIKE ? OR cs.name LIKE ? OR o.name LIKE ? OR l.name LIKE ?)" : "";
     const params = [config.activityType, ...(req.query.search ? Array(8).fill(`%${req.query.search}%`) : [])];
-    return res.json(paginate(req, `SELECT act.*, ${parentName} FROM activities act ${joins} WHERE act.type = ? ${search}`, `SELECT COUNT(*) AS total FROM activities act ${joins} WHERE act.type = ? ${search}`, params, "COALESCE(date_start, due_date) DESC"));
+    return res.json(paginate(req, `SELECT act.*, ${parentName} FROM activities act ${joins} WHERE act.deleted = 0 AND act.type = ? ${search}`, `SELECT COUNT(*) AS total FROM activities act ${joins} WHERE act.deleted = 0 AND act.type = ? ${search}`, params, "COALESCE(date_start, due_date) DESC"));
   }
   if (config.allActivities) {
     const joins = "LEFT JOIN accounts a ON a.id = act.parent_id LEFT JOIN contacts c ON c.id = act.parent_id LEFT JOIN cases cs ON cs.id = act.parent_id LEFT JOIN opportunities o ON o.id = act.parent_id LEFT JOIN leads l ON l.id = act.parent_id";
     const parentName = "COALESCE(a.name, c.name, cs.name, o.name, l.name) AS parent_name";
-    const search = req.query.search ? "WHERE (act.title LIKE ? OR act.status LIKE ? OR act.description LIKE ? OR a.name LIKE ? OR c.name LIKE ? OR cs.name LIKE ? OR o.name LIKE ? OR l.name LIKE ?)" : "";
+    const search = req.query.search ? "AND (act.title LIKE ? OR act.status LIKE ? OR act.description LIKE ? OR a.name LIKE ? OR c.name LIKE ? OR cs.name LIKE ? OR o.name LIKE ? OR l.name LIKE ?)" : "";
     const params = req.query.search ? Array(8).fill(`%${req.query.search}%`) : [];
-    return res.json(paginate(req, `SELECT act.*, ${parentName} FROM activities act ${joins} ${search}`, `SELECT COUNT(*) AS total FROM activities act ${joins} ${search}`, params, "COALESCE(date_start, due_date) DESC"));
+    return res.json(paginate(req, `SELECT act.*, ${parentName} FROM activities act ${joins} WHERE act.deleted = 0 ${search}`, `SELECT COUNT(*) AS total FROM activities act ${joins} WHERE act.deleted = 0 ${search}`, params, "COALESCE(date_start, due_date) DESC"));
   }
   if (req.params.entity === "contacts") {
     const accountNameSql = "(SELECT a.name FROM accounts a WHERE a.id = c.account_id OR c.account_ids_json LIKE '%' || a.id || '%' LIMIT 1)";
-    const search = req.query.search ? `WHERE (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR c.title LIKE ? OR EXISTS (SELECT 1 FROM accounts ax WHERE (ax.id = c.account_id OR c.account_ids_json LIKE '%' || ax.id || '%') AND ax.name LIKE ?))` : "";
+    const search = req.query.search ? `AND (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR c.title LIKE ? OR EXISTS (SELECT 1 FROM accounts ax WHERE (ax.id = c.account_id OR c.account_ids_json LIKE '%' || ax.id || '%') AND ax.name LIKE ?))` : "";
     const params = req.query.search ? Array(5).fill(`%${req.query.search}%`) : [];
-    return res.json(paginate(req, `SELECT c.*, ${accountNameSql} AS account_name FROM contacts c ${search}`, `SELECT COUNT(*) AS total FROM contacts c ${search}`, params, "c.name COLLATE NOCASE ASC"));
+    return res.json(paginate(req, `SELECT c.*, ${accountNameSql} AS account_name FROM contacts c WHERE c.deleted = 0 ${search}`, `SELECT COUNT(*) AS total FROM contacts c WHERE c.deleted = 0 ${search}`, params, "c.name COLLATE NOCASE ASC"));
   }
   if (req.params.entity === "opportunities") {
-    const search = req.query.search ? "WHERE (o.name LIKE ? OR o.stage LIKE ? OR o.type LIKE ? OR EXISTS (SELECT 1 FROM accounts ax WHERE o.account_ids_json LIKE '%' || ax.id || '%' AND ax.name LIKE ?))" : "";
+    const search = req.query.search ? "AND (o.name LIKE ? OR o.stage LIKE ? OR o.type LIKE ? OR EXISTS (SELECT 1 FROM accounts ax WHERE o.account_ids_json LIKE '%' || ax.id || '%' AND ax.name LIKE ?))" : "";
     const params = req.query.search ? Array(4).fill(`%${req.query.search}%`) : [];
-    return res.json(paginate(req, `SELECT o.*, (SELECT name FROM accounts ax WHERE o.account_ids_json LIKE '%' || ax.id || '%' LIMIT 1) AS account_name FROM opportunities o ${search}`, `SELECT COUNT(*) AS total FROM opportunities o ${search}`, params, "o.updated_at DESC"));
+    return res.json(paginate(req, `SELECT o.*, (SELECT name FROM accounts ax WHERE o.account_ids_json LIKE '%' || ax.id || '%' LIMIT 1) AS account_name FROM opportunities o WHERE o.deleted = 0 ${search}`, `SELECT COUNT(*) AS total FROM opportunities o WHERE o.deleted = 0 ${search}`, params, "o.updated_at DESC"));
   }
   if (["invoices", "cases"].includes(req.params.entity)) {
     const table = config.table;
-    const search = req.query.search ? `WHERE (e.name LIKE ? OR e.status LIKE ? OR a.name LIKE ?${req.params.entity === "cases" ? " OR e.priority LIKE ?" : ""})` : "";
+    const search = req.query.search ? `AND (e.name LIKE ? OR e.status LIKE ? OR a.name LIKE ?${req.params.entity === "cases" ? " OR e.priority LIKE ?" : ""})` : "";
     const params = req.query.search ? Array(req.params.entity === "cases" ? 4 : 3).fill(`%${req.query.search}%`) : [];
-    return res.json(paginate(req, `SELECT e.*, a.name AS account_name FROM ${table} e LEFT JOIN accounts a ON a.id = e.account_id ${search}`, `SELECT COUNT(*) AS total FROM ${table} e LEFT JOIN accounts a ON a.id = e.account_id ${search}`, params, config.defaultOrder.replace("updated_at", "e.updated_at").replace("created_at", "e.created_at")));
+    return res.json(paginate(req, `SELECT e.*, a.name AS account_name FROM ${table} e LEFT JOIN accounts a ON a.id = e.account_id WHERE e.deleted = 0 ${search}`, `SELECT COUNT(*) AS total FROM ${table} e LEFT JOIN accounts a ON a.id = e.account_id WHERE e.deleted = 0 ${search}`, params, config.defaultOrder.replace("updated_at", "e.updated_at").replace("created_at", "e.created_at")));
   }
   if (req.params.entity === "notes") {
-    const search = req.query.search ? "WHERE (n.title LIKE ? OR n.description LIKE ? OR a.name LIKE ?)" : "";
+    const search = req.query.search ? "AND (n.title LIKE ? OR n.description LIKE ? OR a.name LIKE ?)" : "";
     const params = req.query.search ? Array(3).fill(`%${req.query.search}%`) : [];
-    return res.json(paginate(req, `SELECT n.*, a.name AS parent_name FROM notes n LEFT JOIN accounts a ON a.id = n.parent_id ${search}`, `SELECT COUNT(*) AS total FROM notes n LEFT JOIN accounts a ON a.id = n.parent_id ${search}`, params, "n.updated_at DESC"));
+    return res.json(paginate(req, `SELECT n.*, a.name AS parent_name FROM notes n LEFT JOIN accounts a ON a.id = n.parent_id WHERE n.deleted = 0 ${search}`, `SELECT COUNT(*) AS total FROM notes n LEFT JOIN accounts a ON a.id = n.parent_id WHERE n.deleted = 0 ${search}`, params, "n.updated_at DESC"));
   }
   if (config.genericModule) {
     const search = req.query.search ? "AND (g.name LIKE ? OR g.status LIKE ? OR g.type LIKE ? OR a.name LIKE ?)" : "";
     const params = [config.genericModule, ...(req.query.search ? [`%${req.query.search}%`, `%${req.query.search}%`, `%${req.query.search}%`, `%${req.query.search}%`] : [])];
-    return res.json(paginate(req, `SELECT g.*, a.name AS account_name FROM generic_records g LEFT JOIN accounts a ON a.id = g.account_id WHERE g.module = ? ${search}`, `SELECT COUNT(*) AS total FROM generic_records g LEFT JOIN accounts a ON a.id = g.account_id WHERE g.module = ? ${search}`, params, "g.name COLLATE NOCASE ASC"));
+    return res.json(paginate(req, `SELECT g.*, a.name AS account_name FROM generic_records g LEFT JOIN accounts a ON a.id = g.account_id WHERE g.deleted = 0 AND g.module = ? ${search}`, `SELECT COUNT(*) AS total FROM generic_records g LEFT JOIN accounts a ON a.id = g.account_id WHERE g.deleted = 0 AND g.module = ? ${search}`, params, "g.name COLLATE NOCASE ASC"));
   }
   if (req.params.entity === "quotes") {
     const search = req.query.search
-      ? "WHERE (q.name LIKE ? OR q.number LIKE ? OR q.stage LIKE ? OR q.approval_status LIKE ? OR q.invoice_status LIKE ? OR a.name LIKE ?)"
+      ? "AND (q.name LIKE ? OR q.number LIKE ? OR q.stage LIKE ? OR q.approval_status LIKE ? OR q.invoice_status LIKE ? OR a.name LIKE ?)"
       : "";
     const params = req.query.search ? Array(6).fill(`%${req.query.search}%`) : [];
     return res.json(paginate(
       req,
-      `SELECT q.*, a.name AS account_name FROM quotes q LEFT JOIN accounts a ON a.id = q.account_id ${search}`,
-      `SELECT COUNT(*) AS total FROM quotes q LEFT JOIN accounts a ON a.id = q.account_id ${search}`,
+      `SELECT q.*, a.name AS account_name FROM quotes q LEFT JOIN accounts a ON a.id = q.account_id WHERE q.deleted = 0 ${search}`,
+      `SELECT COUNT(*) AS total FROM quotes q LEFT JOIN accounts a ON a.id = q.account_id WHERE q.deleted = 0 ${search}`,
       params,
       "CAST(q.number AS INTEGER) DESC"
     ));
   }
   const search = searchWhere(config, req.query.search || "");
-  res.json(paginate(req, `SELECT * FROM ${config.table} WHERE ${search.sql}`, `SELECT COUNT(*) AS total FROM ${config.table} WHERE ${search.sql}`, search.params, config.defaultOrder));
+  res.json(paginate(req, `SELECT * FROM ${config.table} WHERE ${search.sql} AND deleted = 0`, `SELECT COUNT(*) AS total FROM ${config.table} WHERE ${search.sql} AND deleted = 0`, search.params, config.defaultOrder));
 });
 
 app.post("/api/entities/:entity", (req, res) => {
@@ -606,7 +630,8 @@ app.post("/api/entities/:entity", (req, res) => {
   const id = createId();
   const createdAt = nowIso();
   if (config.activityType) {
-    run("INSERT INTO activities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, config.activityType, body.title || body.name, body.status || "Planificada", body.priority || "Media", body.dateStart || createdAt, body.dueDate || null, body.durationMinutes || 0, body.parentType || "Accounts", body.parentId || body.accountId || null, body.contactId || null, "[]", JSON.stringify([req.user.id]), body.description || null, 0, JSON.stringify({ source: "biocrm" })]);
+    const defaultStatus = config.activityType === "Tarea" ? "No_Iniciada" : "Planned";
+    run("INSERT INTO activities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, config.activityType, body.title || body.name, body.status || defaultStatus, body.priority || "Medium", body.dateStart || createdAt, body.dueDate || null, body.durationMinutes || 0, body.parentType || "Accounts", body.parentId || body.accountId || null, body.contactId || null, "[]", JSON.stringify([req.user.id]), body.description || null, 0, JSON.stringify({ source: "biocrm" })]);
     const after = get("SELECT * FROM activities WHERE id = ?", [id]);
     audit(req, "create", "activities", id, null, after);
     return res.status(201).json(after);
@@ -622,11 +647,11 @@ app.post("/api/entities/:entity", (req, res) => {
   } else if (req.params.entity === "products") {
     run("INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, body.name, body.partNumber || null, body.type || null, body.categoryId || null, body.price || 0, body.cost || 0, 0, createdAt, createdAt, JSON.stringify({ source: "biocrm" })]);
   } else if (req.params.entity === "cases") {
-    run("INSERT INTO cases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, body.number || null, body.name, body.accountId || null, body.status || "Nuevo", body.priority || "Media", body.type || null, body.description || null, 0, createdAt, createdAt, JSON.stringify({ source: "biocrm" })]);
+    run("INSERT INTO cases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, body.number || null, body.name, body.accountId || null, body.status || "Recepcion", body.priority || null, body.type || null, body.description || null, 0, createdAt, createdAt, JSON.stringify({ source: "biocrm" })]);
   } else if (req.params.entity === "opportunities") {
-    run("INSERT INTO opportunities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, body.name, body.stage || "Prospeccion", body.type || null, Number(body.amount || 0), Number(body.probability || 0), body.closeDate || null, req.user.id, JSON.stringify([body.accountId].filter(Boolean)), JSON.stringify([body.contactId].filter(Boolean)), 0, createdAt, createdAt, JSON.stringify({ source: "biocrm" })]);
+    run("INSERT INTO opportunities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, body.name, body.stage || "Contactar", body.type || null, Number(body.amount || 0), Number(body.probability || 0), body.closeDate || null, req.user.id, JSON.stringify([body.accountId].filter(Boolean)), JSON.stringify([body.contactId].filter(Boolean)), 0, createdAt, createdAt, JSON.stringify({ source: "biocrm" })]);
   } else if (req.params.entity === "leads") {
-    run("INSERT INTO leads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, body.name, body.accountName || null, body.status || "Nuevo", body.source || null, body.phone || null, body.email || null, body.city || null, body.country || null, 0, createdAt, createdAt, JSON.stringify({ source: "biocrm" })]);
+    run("INSERT INTO leads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, body.name, body.accountName || null, body.status || "New", body.source || null, body.phone || null, body.email || null, body.city || null, body.country || null, 0, createdAt, createdAt, JSON.stringify({ source: "biocrm" })]);
   } else if (req.params.entity === "notes") {
     run("INSERT INTO notes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, body.title || body.name, body.parentType || "Accounts", body.parentId || body.accountId || null, body.contactId || null, body.description || null, body.fileName || null, req.user.id, 0, createdAt, createdAt, JSON.stringify({ source: "biocrm" })]);
   } else {
@@ -635,6 +660,64 @@ app.post("/api/entities/:entity", (req, res) => {
   const after = get(`SELECT * FROM ${config.table} WHERE id = ?`, [id]);
   audit(req, "create", req.params.entity, id, null, after);
   res.status(201).json(after);
+});
+
+const editableFieldsByEntity = {
+  contacts: ["name", "title", "department", "phone", "email", "city", "state", "country", "address"],
+  opportunities: ["name", "stage", "type", "amount", "probability", "closeDate"],
+  leads: ["name", "accountName", "status", "source", "phone", "email", "city", "country"],
+  products: ["name", "partNumber", "type", "price", "cost"],
+  cases: ["name", "status", "priority", "type", "description"],
+  notes: ["title", "description"]
+};
+const activityEditableFields = ["title", "status", "priority", "dateStart", "dueDate", "durationMinutes", "description"];
+const genericEditableFields = ["name", "status", "type", "startDate", "endDate", "total"];
+const numericEditFields = new Set(["amount", "probability", "price", "cost", "total", "durationMinutes"]);
+
+function toSnakeCase(key) {
+  return key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+}
+
+function resolveEditableEntity(entity) {
+  const config = getEntityConfig(entity);
+  if (!config) return null;
+  if (config.activityType || config.allActivities) return { table: "activities", fields: activityEditableFields };
+  if (config.genericModule) return { table: "generic_records", fields: genericEditableFields };
+  if (editableFieldsByEntity[entity]) return { table: entityConfig[entity].table, fields: editableFieldsByEntity[entity] };
+  return null;
+}
+
+app.patch("/api/entities/:entity/:id", (req, res) => {
+  if (req.params.entity === "quotes") return updateQuote(req, res);
+  const resolved = resolveEditableEntity(req.params.entity);
+  if (!resolved) return res.status(400).json({ error: "Edicion no implementada para este modulo" });
+  const before = get(`SELECT * FROM ${resolved.table} WHERE id = ?`, [req.params.id]);
+  if (!before) return res.status(404).json({ error: "Registro no encontrado" });
+  const patch = Object.fromEntries(
+    Object.entries(req.body || {})
+      .filter(([key]) => resolved.fields.includes(key))
+      .map(([key, value]) => [key, numericEditFields.has(key) ? Number(value || 0) : value])
+  );
+  if (!Object.keys(patch).length) return res.json(before);
+  const hasUpdatedAt = "updatedAt" in before;
+  const assignments = Object.keys(patch).map((key) => `${toSnakeCase(key)} = ?`).join(", ");
+  const sql = hasUpdatedAt ? `UPDATE ${resolved.table} SET ${assignments}, updated_at = ? WHERE id = ?` : `UPDATE ${resolved.table} SET ${assignments} WHERE id = ?`;
+  const params = hasUpdatedAt ? [...Object.values(patch), nowIso(), req.params.id] : [...Object.values(patch), req.params.id];
+  run(sql, params);
+  const after = get(`SELECT * FROM ${resolved.table} WHERE id = ?`, [req.params.id]);
+  audit(req, "update", req.params.entity, req.params.id, before, after);
+  res.json(after);
+});
+
+app.delete("/api/entities/:entity/:id", (req, res) => {
+  if (req.params.entity === "quotes") return deleteQuote(req, res);
+  const resolved = resolveEditableEntity(req.params.entity);
+  if (!resolved) return res.status(400).json({ error: "Eliminacion no implementada para este modulo" });
+  const before = get(`SELECT * FROM ${resolved.table} WHERE id = ?`, [req.params.id]);
+  if (!before) return res.status(404).json({ error: "Registro no encontrado" });
+  run(`UPDATE ${resolved.table} SET deleted = 1 WHERE id = ?`, [req.params.id]);
+  audit(req, "delete", req.params.entity, req.params.id, before, null);
+  res.json({ ok: true });
 });
 
 function quoteDetail(id) {
@@ -649,12 +732,12 @@ function quoteDetail(id) {
     [id]
   );
   if (!quote) return null;
-  const groups = all("SELECT * FROM quote_groups WHERE quote_id = ? ORDER BY number, name", [id]);
+  const groups = all("SELECT * FROM quote_groups WHERE quote_id = ? AND deleted = 0 ORDER BY number, name", [id]);
   const lines = all(
     `SELECT l.*, p.name AS catalog_product_name, p.part_number AS catalog_part_number, p.type AS catalog_product_type, p.legacy_json AS product_legacy_json
      FROM quote_lines l
      LEFT JOIN products p ON p.id = l.product_id
-     WHERE l.quote_id = ?
+     WHERE l.quote_id = ? AND l.deleted = 0
      ORDER BY l.group_id, l.number, l.name`,
     [id]
   );
@@ -725,19 +808,61 @@ app.get("/api/quotes/:id", (req, res) => {
   res.json(detail);
 });
 
+function writeQuoteLines(quoteId, lines, currency, timestamp, shippingAmount = 0) {
+  const groupId = createId();
+  const totals = quoteTotals(lines, shippingAmount);
+  run("INSERT INTO quote_groups VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [groupId, quoteId, 1, "Grupo principal", totals.subtotal, totals.discount, totals.tax, totals.total, currency.id, 0, JSON.stringify({ source: "biocrm" })]);
+  const stmt = db.prepare("INSERT INTO quote_lines VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  lines.forEach((line, index) => {
+    const quantity = Number(line.quantity || 1);
+    const unitPrice = Number(line.unitPrice || 0);
+    const discountAmount = Number(line.discountAmount || 0);
+    const vatAmount = lineTax(line);
+    const total = quantity * unitPrice - discountAmount + vatAmount;
+    const lineId = createId();
+    stmt.run(lineId, quoteId, groupId, line.productId || null, index + 1, line.name || "Producto", line.partNumber || null, line.description || null, quantity, Number(line.costPrice || 0), Number(line.listPrice || unitPrice), unitPrice, Number(line.discount || 0), discountAmount, line.discountType || "Amount", line.vatRate || null, vatAmount, total, currency.id, 0, JSON.stringify({ source: "biocrm" }));
+    if (line.productId) {
+      run("INSERT INTO entity_links VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [createId(), "quote_lines", lineId, "products", line.productId, "product", "biocrm_quote_lines", timestamp, 0, JSON.stringify({ source: "biocrm" })]);
+    }
+  });
+  return totals;
+}
+
+function clearQuoteLines(quoteId) {
+  const oldLineIds = all("SELECT id FROM quote_lines WHERE quote_id = ?", [quoteId]).map((line) => line.id);
+  if (oldLineIds.length) {
+    run(`DELETE FROM entity_links WHERE source_module = 'quote_lines' AND source_id IN (${oldLineIds.map(() => "?").join(", ")})`, oldLineIds);
+  }
+  run("DELETE FROM quote_lines WHERE quote_id = ?", [quoteId]);
+  run("DELETE FROM quote_groups WHERE quote_id = ?", [quoteId]);
+}
+
+function relinkQuote(quoteId, accountId, contactId, opportunityId, timestamp) {
+  run("DELETE FROM entity_links WHERE source_module = 'quotes' AND source_id = ?", [quoteId]);
+  for (const [targetModule, targetId, relationship] of [
+    ["accounts", accountId, "account"],
+    ["contacts", contactId, "contact"],
+    ["opportunities", opportunityId, "opportunity"]
+  ]) {
+    if (targetId) run("INSERT INTO entity_links VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [createId(), "quotes", quoteId, targetModule, targetId, relationship, "biocrm_quotes", timestamp, 0, JSON.stringify({ source: "biocrm" })]);
+  }
+}
+
 function createQuote(req, res) {
   const body = req.body || {};
   if (!body.accountId) return res.status(400).json({ error: "Cliente obligatorio para cotizar" });
   if (!Array.isArray(body.lines) || body.lines.length === 0) return res.status(400).json({ error: "La cotizacion necesita al menos una linea" });
   const id = createId();
   const nextNumber = body.number || (db.prepare("SELECT MAX(CAST(number AS INTEGER)) AS max_number FROM quotes").get().max_number || 0) + 1;
-  const currency = (hasTable("currencies") ? get("SELECT id, name, symbol, iso4217 FROM currencies WHERE id = ?", [body.currencyId || "-99"]) : null) || { id: body.currencyId || "-99", name: "US Dollars", symbol: "$", iso4217: "USD" };
+  const accountDefaults = accountQuoteDefaults(body.accountId);
+  const lastQuote = accountDefaults?.lastQuote || {};
+  const currency = (hasTable("currencies") ? get("SELECT id, name, symbol, iso4217 FROM currencies WHERE id = ?", [body.currencyId || lastQuote.currencyId || "-99"]) : null) || { id: body.currencyId || lastQuote.currencyId || "-99", name: "US Dollars", symbol: "$", iso4217: "USD" };
   const templateIds = Array.isArray(body.templateIds) ? body.templateIds.filter(Boolean) : [body.templateId].filter(Boolean);
   const templateNames = templateIds.map((templateId) => (hasTable("quote_templates") ? get("SELECT name FROM quote_templates WHERE id = ?", [templateId])?.name : null) || templateId);
   const billing = body.billing || {};
   const shipping = body.shipping || {};
-  const billingAddress = body.billingAddress || addressFromParts(billing);
-  const shippingAddress = body.shippingAddress || addressFromParts(shipping);
+  const billingAddress = body.billingAddress || addressFromParts(billing) || (accountDefaults ? addressFromParts(accountDefaults.billing) : null) || null;
+  const shippingAddress = body.shippingAddress || addressFromParts(shipping) || (accountDefaults ? addressFromParts(accountDefaults.shipping) : null) || null;
   const totals = quoteTotals(body.lines, body.shippingAmount || 0);
   const createdAt = nowIso();
   db.exec("BEGIN");
@@ -755,10 +880,10 @@ function createQuote(req, res) {
       body.invoiceStatus || "Not Invoiced",
       body.term || null,
       body.terms || null,
-      body.paymentMethod || null,
-      body.deliveryTime || null,
-      body.observations || null,
-      body.originCountry || null,
+      body.paymentMethod || lastQuote.paymentMethod || null,
+      body.deliveryTime || lastQuote.deliveryTime || null,
+      body.observations || lastQuote.observations || null,
+      body.originCountry || lastQuote.originCountry || accountDefaults?.account?.country || null,
       JSON.stringify(templateIds),
       JSON.stringify(templateNames),
       totals.subtotal,
@@ -772,18 +897,18 @@ function createQuote(req, res) {
       currency.symbol,
       currency.iso4217,
       body.expiration || null,
-      billingAddress || null,
-      shippingAddress || null,
-      billing.street || null,
-      billing.city || null,
-      billing.state || null,
-      billing.postalCode || null,
-      billing.country || null,
-      shipping.street || null,
-      shipping.city || null,
-      shipping.state || null,
-      shipping.postalCode || null,
-      shipping.country || null,
+      billingAddress,
+      shippingAddress,
+      billing.street || accountDefaults?.billing?.street || null,
+      billing.city || accountDefaults?.billing?.city || null,
+      billing.state || accountDefaults?.billing?.state || null,
+      billing.postalCode || accountDefaults?.billing?.postalCode || null,
+      billing.country || accountDefaults?.billing?.country || null,
+      shipping.street || accountDefaults?.shipping?.street || null,
+      shipping.city || accountDefaults?.shipping?.city || null,
+      shipping.state || accountDefaults?.shipping?.state || null,
+      shipping.postalCode || accountDefaults?.shipping?.postalCode || null,
+      shipping.country || accountDefaults?.shipping?.country || null,
       body.description || null,
       body.assignedUserId || req.user.id,
       body.assignedUser || req.user.displayName,
@@ -792,28 +917,8 @@ function createQuote(req, res) {
       createdAt,
       JSON.stringify({ source: "biocrm", templateIds, templateNames })
     ]);
-    const groupId = createId();
-    run("INSERT INTO quote_groups VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [groupId, id, 1, body.groupName || "Grupo principal", totals.subtotal, totals.discount, totals.tax, totals.total, currency.id, 0, JSON.stringify({ source: "biocrm" })]);
-    const stmt = db.prepare("INSERT INTO quote_lines VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-    body.lines.forEach((line, index) => {
-      const quantity = Number(line.quantity || 1);
-      const unitPrice = Number(line.unitPrice || 0);
-      const discountAmount = Number(line.discountAmount || 0);
-      const vatAmount = lineTax(line);
-      const total = quantity * unitPrice - discountAmount + vatAmount;
-      const lineId = createId();
-      stmt.run(lineId, id, groupId, line.productId || null, index + 1, line.name || "Producto", line.partNumber || null, line.description || null, quantity, Number(line.costPrice || 0), Number(line.listPrice || unitPrice), unitPrice, Number(line.discount || 0), discountAmount, line.discountType || "Amount", line.vatRate || null, vatAmount, total, currency.id, 0, JSON.stringify({ source: "biocrm" }));
-      if (line.productId) {
-        run("INSERT INTO entity_links VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [createId(), "quote_lines", lineId, "products", line.productId, "product", "biocrm_quote_lines", createdAt, 0, JSON.stringify({ source: "biocrm" })]);
-      }
-    });
-    for (const [targetModule, targetId, relationship] of [
-      ["accounts", body.accountId, "account"],
-      ["contacts", body.contactId, "contact"],
-      ["opportunities", body.opportunityId, "opportunity"]
-    ]) {
-      if (targetId) run("INSERT INTO entity_links VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [createId(), "quotes", id, targetModule, targetId, relationship, "biocrm_quotes", createdAt, 0, JSON.stringify({ source: "biocrm" })]);
-    }
+    writeQuoteLines(id, body.lines, currency, createdAt, body.shippingAmount || 0);
+    relinkQuote(id, body.accountId, body.contactId, body.opportunityId, createdAt);
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -823,6 +928,91 @@ function createQuote(req, res) {
   audit(req, "create", "quotes", id, null, after);
   res.status(201).json(after);
 }
+
+function updateQuote(req, res) {
+  const before = quoteDetail(req.params.id);
+  if (!before) return res.status(404).json({ error: "Cotizacion no encontrada" });
+  const body = req.body || {};
+  if (!Array.isArray(body.lines) || body.lines.length === 0) return res.status(400).json({ error: "La cotizacion necesita al menos una linea" });
+  const quote = before.quote;
+  const currency = (hasTable("currencies") && body.currencyId ? get("SELECT id, name, symbol, iso4217 FROM currencies WHERE id = ?", [body.currencyId]) : null) || { id: quote.currencyId, name: quote.currencyName, symbol: quote.currencySymbol, iso4217: quote.currencyIso };
+  const templateIds = Array.isArray(body.templateIds) ? body.templateIds.filter(Boolean) : quote.templateIds || [];
+  const templateNames = templateIds.map((templateId) => (hasTable("quote_templates") ? get("SELECT name FROM quote_templates WHERE id = ?", [templateId])?.name : null) || templateId);
+  const accountId = body.accountId || quote.accountId;
+  const contactId = body.contactId !== undefined ? body.contactId : quote.contactId;
+  const opportunityId = body.opportunityId !== undefined ? body.opportunityId : quote.opportunityId;
+  const updatedAt = nowIso();
+  db.exec("BEGIN");
+  try {
+    clearQuoteLines(req.params.id);
+    const totals = writeQuoteLines(req.params.id, body.lines, currency, updatedAt, body.shippingAmount ?? quote.shipping ?? 0);
+    run(
+      `UPDATE quotes SET
+        name = ?, account_id = ?, contact_id = ?, opportunity_id = ?, stage = ?, approval_status = ?, invoice_status = ?,
+        payment_method = ?, delivery_time = ?, observations = ?, expiration = ?, description = ?,
+        subtotal = ?, discount = ?, tax = ?, shipping = ?, total = ?,
+        currency_id = ?, currency_name = ?, currency_symbol = ?, currency_iso = ?,
+        template_ids_json = ?, template_names_json = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        body.name ?? quote.name,
+        accountId,
+        contactId,
+        opportunityId,
+        body.stage ?? quote.stage,
+        body.approvalStatus ?? quote.approvalStatus,
+        body.invoiceStatus ?? quote.invoiceStatus,
+        body.paymentMethod ?? quote.paymentMethod,
+        body.deliveryTime ?? quote.deliveryTime,
+        body.observations ?? quote.observations,
+        body.expiration ?? quote.expiration,
+        body.description ?? quote.description,
+        totals.subtotal,
+        totals.discount,
+        totals.tax,
+        totals.shipping,
+        totals.total,
+        currency.id,
+        currency.name,
+        currency.symbol,
+        currency.iso4217,
+        JSON.stringify(templateIds),
+        JSON.stringify(templateNames),
+        updatedAt,
+        req.params.id
+      ]
+    );
+    relinkQuote(req.params.id, accountId, contactId, opportunityId, updatedAt);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  const after = quoteDetail(req.params.id);
+  audit(req, "update", "quotes", req.params.id, before, after);
+  res.json(after);
+}
+
+function deleteQuote(req, res) {
+  const before = get("SELECT * FROM quotes WHERE id = ?", [req.params.id]);
+  if (!before) return res.status(404).json({ error: "Cotizacion no encontrada" });
+  db.exec("BEGIN");
+  try {
+    run("UPDATE quotes SET deleted = 1 WHERE id = ?", [req.params.id]);
+    run("UPDATE quote_groups SET deleted = 1 WHERE quote_id = ?", [req.params.id]);
+    run("UPDATE quote_lines SET deleted = 1 WHERE quote_id = ?", [req.params.id]);
+    run("DELETE FROM entity_links WHERE source_module = 'quotes' AND source_id = ?", [req.params.id]);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  audit(req, "delete", "quotes", req.params.id, before, null);
+  res.json({ ok: true });
+}
+
+app.patch("/api/quotes/:id", (req, res) => updateQuote(req, res));
+app.delete("/api/quotes/:id", (req, res) => deleteQuote(req, res));
 
 app.get("/api/migration", (req, res) => {
   res.json({

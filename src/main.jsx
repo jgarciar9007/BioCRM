@@ -24,6 +24,7 @@ import {
   Save,
   Search,
   ShieldCheck,
+  Trash2,
   UserRound,
   X
 } from "lucide-react";
@@ -68,9 +69,23 @@ const api = {
   updateAccount: (id, body) => request(`/api/accounts/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   entity: (entity, params = {}) => request(`/api/entities/${entity}?${new URLSearchParams(params)}`),
   createEntity: (entity, body) => request(`/api/entities/${entity}`, { method: "POST", body: JSON.stringify(body) }),
+  updateEntity: (entity, id, body) => request(`/api/entities/${entity}/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteEntity: (entity, id) => request(`/api/entities/${entity}/${id}`, { method: "DELETE" }),
+  deleteAccount: (id) => request(`/api/accounts/${id}`, { method: "DELETE" }),
   quote: (id) => request(`/api/quotes/${id}`),
+  quoteContext: (accountId) => request(`/api/quote-context?accountId=${accountId}`),
+  updateQuote: (id, body) => request(`/api/quotes/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteQuote: (id) => request(`/api/quotes/${id}`, { method: "DELETE" }),
   migration: () => request("/api/migration")
 };
+
+const activityEntityByType = { Llamada: "calls", Reunion: "meetings", Tarea: "tasks" };
+const moneyFieldKeys = new Set(["amount", "price", "cost", "total"]);
+const opportunityStages = ["Contactar", "Cotizacion", "Envio_De_Cotizacion", "Envio_De_Muestra", "Prueba_De_Estabilidad", "Negociacion_Final", "Ganado", "Perdido"];
+const taskStatuses = ["No_Iniciada", "En_Progreso", "Completada", "Aplazada", "Pendiente_Informacion"];
+const meetingCallStatuses = ["Planned", "Held", "Not Held"];
+const taskPriorities = ["High", "Medium", "Low"];
+const caseStatuses = ["Recepcion", "Analisis_Y_Solucion", "Seguimiento", "Re_Proceso", "Cerrada"];
 
 const icons = {
   home: Home,
@@ -89,10 +104,6 @@ const icons = {
   tasks: ClipboardList,
   notes: Pencil,
   cases: ClipboardList,
-  campaigns: Activity,
-  targets: UserRound,
-  target_lists: ClipboardList,
-  contracts: FileText,
   calendar: CalendarClock,
   accion: Activity,
   diseno: Pencil,
@@ -112,7 +123,6 @@ const moduleLabels = {
   documents: "Documentos",
   emails: "Correos",
   projects: "Proyectos",
-  contracts: "Contratos",
   accion: "Acciones",
   diseno: "Disenos",
   plan_de_accion: "Planes de accion",
@@ -209,7 +219,7 @@ function Login({ onLogin, error, setError }) {
 function Crm({ user, onLogout }) {
   const [summary, setSummary] = useState(null);
   const [modules, setModules] = useState([]);
-  const [directory, setDirectory] = useState({ industries: [], statuses: [], users: [] });
+  const [directory, setDirectory] = useState({ industries: [], users: [] });
   const [activeView, setActiveView] = useState("home");
   const [createFor, setCreateFor] = useState(null);
   const [selectedAccountId, setSelectedAccountId] = useState(null);
@@ -326,7 +336,7 @@ function Crm({ user, onLogout }) {
           }}
         />
       ) : null}
-      {quoteId ? <QuoteDrawer id={quoteId} onClose={() => setQuoteId(null)} /> : null}
+      {quoteId ? <QuoteDrawer id={quoteId} onClose={() => setQuoteId(null)} onChanged={() => setRefreshKey((key) => key + 1)} /> : null}
     </main>
   );
 }
@@ -419,8 +429,10 @@ function HomeView({ summary, refreshKey, onQuote, onOpenAccounts }) {
 
 function AccountWorkspace({ directory, selectedId, onSelect, onCreate, onQuote, refreshKey }) {
   const [accounts, setAccounts] = useState({ items: [], total: 0 });
-  const [filters, setFilters] = useState({ search: "", industry: "", status: "", pageSize: 60 });
+  const [filters, setFilters] = useState({ search: "", industry: "", pageSize: 60 });
   const [selected, setSelected] = useState(null);
+  const [detailTick, setDetailTick] = useState(0);
+  const [recordView, setRecordView] = useState(null);
 
   useEffect(() => {
     api.accounts(filters).then((data) => {
@@ -431,7 +443,7 @@ function AccountWorkspace({ directory, selectedId, onSelect, onCreate, onQuote, 
 
   useEffect(() => {
     if (selectedId) api.account(selectedId).then(setSelected);
-  }, [selectedId, refreshKey]);
+  }, [selectedId, refreshKey, detailTick]);
 
   return (
     <div className="account-layout">
@@ -445,10 +457,6 @@ function AccountWorkspace({ directory, selectedId, onSelect, onCreate, onQuote, 
             <select value={filters.industry} onChange={(event) => setFilters({ ...filters, industry: event.target.value })}>
               <option value="">Industria</option>
               {directory.industries.map((item) => <option key={item}>{item}</option>)}
-            </select>
-            <select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}>
-              <option value="">Estado</option>
-              {directory.statuses.map((item) => <option key={item}>{item}</option>)}
             </select>
           </div>
         </div>
@@ -472,13 +480,39 @@ function AccountWorkspace({ directory, selectedId, onSelect, onCreate, onQuote, 
       </section>
 
       <section className="detail-pane">
-        {selected ? <AccountDetail selected={selected} onCreate={onCreate} onQuote={onQuote} /> : <div className="empty">Selecciona un cliente</div>}
+        {selected ? (
+          <AccountDetail
+            selected={selected}
+            onCreate={onCreate}
+            onQuote={onQuote}
+            onOpenRecord={setRecordView}
+            onDeleted={() => {
+              onSelect(null);
+              setSelected(null);
+              setDetailTick((tick) => tick + 1);
+            }}
+          />
+        ) : (
+          <div className="empty">Selecciona un cliente</div>
+        )}
       </section>
+
+      {recordView ? (
+        <RecordDrawer
+          entity={recordView.entity}
+          record={recordView.record}
+          onClose={() => setRecordView(null)}
+          onChanged={() => {
+            setRecordView(null);
+            setDetailTick((tick) => tick + 1);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
 
-function AccountDetail({ selected, onCreate, onQuote }) {
+function AccountDetail({ selected, onCreate, onQuote, onOpenRecord, onDeleted }) {
   const { account, related } = selected;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(account);
@@ -495,11 +529,16 @@ function AccountDetail({ selected, onCreate, onQuote }) {
     setEditing(false);
   }
 
+  async function remove() {
+    if (!window.confirm(`¿Eliminar el cliente "${account.name}"? Esta accion no se puede deshacer.`)) return;
+    await api.deleteAccount(account.id);
+    onDeleted();
+  }
+
   return (
     <div className="detail">
       <div className="detail-head">
         <div>
-          <span className={`pill ${account.status === "Eliminado" ? "danger" : ""}`}>{account.status}</span>
           {editing ? <input className="title-input" value={draft.name || ""} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /> : <h2>{account.name}</h2>}
           <p>{[account.industry, account.type, account.assignedUser].filter(Boolean).join(" · ")}</p>
         </div>
@@ -510,6 +549,9 @@ function AccountDetail({ selected, onCreate, onQuote }) {
           </button>
           <button className="icon-button" onClick={() => (editing ? save() : setEditing(true))} title={editing ? "Guardar" : "Editar"}>
             {editing ? <Save size={18} /> : <Pencil size={18} />}
+          </button>
+          <button className="icon-button" onClick={remove} title="Eliminar cliente">
+            <Trash2 size={18} />
           </button>
         </div>
       </div>
@@ -538,7 +580,6 @@ function AccountDetail({ selected, onCreate, onQuote }) {
           { key: "documents", title: "Documentos", icon: FileText, items: related.documents, create: "documents" },
           { key: "emails", title: "Correos", icon: Mail, items: related.emails || [], create: "emails" },
           { key: "projects", title: "Proyectos", icon: ClipboardList, items: related.projects || [], create: "projects" },
-          { key: "contracts", title: "Contratos", icon: FileText, items: related.contracts || [], create: "contracts" },
           { key: "disenos", title: "Disenos", icon: Pencil, items: related.disenos || [], create: "diseno" },
           { key: "cartera", title: "Cartera", icon: BadgeDollarSign, items: related.cartera || [], create: "cartera" },
           { key: "acciones", title: "Acciones", icon: Activity, items: related.acciones || [], create: "accion" },
@@ -552,27 +593,16 @@ function AccountDetail({ selected, onCreate, onQuote }) {
           </button>
         ))}
       </section>
-      {relatedView ? <RelatedDrawer account={account} relation={relatedView} onClose={() => setRelatedView(null)} onCreate={onCreate} onQuote={onQuote} /> : null}
-      <section className="timeline legacy-panels">
-        <Panel title="Contactos" count={related.contacts.length}>
-          {related.contacts.slice(0, 8).map((item) => <MiniRow key={item.id} title={item.name} meta={[item.title, item.phone, item.email].filter(Boolean).join(" · ")} />)}
-        </Panel>
-        <Panel title="Cotizaciones" count={related.quotes.length}>
-          {related.quotes.slice(0, 10).map((quote) => (
-            <button className="mini-row clickable" key={quote.id} onClick={() => onQuote(quote.id)}>
-              <strong>{quote.name}</strong>
-              <span>#{quote.number} · {quote.stage} · {formatMoney(quote.total)}</span>
-            </button>
-          ))}
-        </Panel>
-        <Panel title="Actividades" count={related.activities.length}>
-          {related.activities.slice(0, 10).map((item) => <MiniRow key={item.id} title={item.title} meta={`${item.type} · ${item.status || ""} · ${shortDate(item.dateStart || item.dueDate)}`} />)}
-        </Panel>
-        <Panel title="Casos y facturas" count={related.cases.length + related.invoices.length}>
-          {related.cases.slice(0, 5).map((item) => <MiniRow key={item.id} title={item.name} meta={`${item.status || ""} · ${item.priority || ""}`} />)}
-          {related.invoices.slice(0, 5).map((item) => <MiniRow key={item.id} title={item.name} meta={`${item.status || ""} · ${formatMoney(item.total)}`} />)}
-        </Panel>
-      </section>
+      {relatedView ? (
+        <RelatedDrawer
+          account={account}
+          relation={relatedView}
+          onClose={() => setRelatedView(null)}
+          onCreate={onCreate}
+          onQuote={onQuote}
+          onOpenRecord={onOpenRecord}
+        />
+      ) : null}
     </div>
   );
 }
@@ -581,18 +611,26 @@ function EntityView({ entity, module, onQuote, refreshKey }) {
   const [data, setData] = useState({ items: [], total: 0 });
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState("list");
+  const [recordView, setRecordView] = useState(null);
+  const [localTick, setLocalTick] = useState(0);
 
   useEffect(() => {
     api.entity(entity, { search, pageSize: 80 }).then(setData);
-  }, [entity, search, refreshKey]);
+  }, [entity, search, refreshKey, localTick]);
 
-  function detailFor(item) {
-    if (entity === "quotes") return item.accountName || "Sin cliente relacionado";
-    if (entity === "opportunities") return [item.stage, formatMoney(item.amount)].filter(Boolean).join(" · ");
-    if (entity === "products") return [item.partNumber, item.type].filter(Boolean).join(" · ");
-    if (entity === "contacts") return [item.title, item.email, item.phone].filter(Boolean).join(" · ");
-    if (entity === "calls" || entity === "meetings" || entity === "tasks" || entity === "calendar") return [item.type, item.status, shortDate(item.dateStart || item.dueDate)].filter(Boolean).join(" · ");
-    return [item.status, item.stage, item.type, item.city, item.country].filter(Boolean).join(" · ") || "Sin clasificacion";
+  function recordEntityFor(item) {
+    if (entity === "calendar") return activityEntityByType[item.type] || null;
+    return creatable.has(entity) ? entity : null;
+  }
+
+  function openRecord(item) {
+    if (entity === "quotes") return onQuote(item.id);
+    const recordEntity = recordEntityFor(item);
+    if (recordEntity) setRecordView({ entity: recordEntity, record: item });
+  }
+
+  function isRowClickable(item) {
+    return entity === "quotes" || Boolean(recordEntityFor(item));
   }
 
   return (
@@ -611,10 +649,10 @@ function EntityView({ entity, module, onQuote, refreshKey }) {
         <button className={viewMode === "list" ? "view-button active" : "view-button"} onClick={() => setViewMode("list")} title="Vista lista"><List size={16} /></button>
         <button className={viewMode === "cards" ? "view-button active" : "view-button"} onClick={() => setViewMode("cards")} title="Vista tarjetas"><LayoutGrid size={16} /></button>
       </div>
-      <EntityList2 items={data.items} entity={entity} onQuote={onQuote} />
+      <EntityList2 items={data.items} entity={entity} onRowClick={openRecord} isRowClickable={isRowClickable} />
       <div className="entity-grid">
         {data.items.map((item) => (
-          <button className="entity-card" key={item.id} onClick={() => entity === "quotes" && onQuote(item.id)}>
+          <button className={`entity-card ${isRowClickable(item) ? "clickable-row" : ""}`} key={item.id} onClick={() => openRecord(item)}>
             <strong>{item.name || item.title}</strong>
             {entity === "quotes" ? <span>{item.accountName || "Sin cliente relacionado"}</span> : null}
             <span>{[item.status, item.stage, item.type, item.city, item.country].filter(Boolean).join(" · ") || "Sin clasificacion"}</span>
@@ -623,73 +661,22 @@ function EntityView({ entity, module, onQuote, refreshKey }) {
           </button>
         ))}
       </div>
+      {recordView ? (
+        <RecordDrawer
+          entity={recordView.entity}
+          record={recordView.record}
+          onClose={() => setRecordView(null)}
+          onChanged={() => {
+            setRecordView(null);
+            setLocalTick((tick) => tick + 1);
+          }}
+        />
+      ) : null}
     </section>
   );
 }
 
-function EntityList({ items, entity, detailFor, onQuote }) {
-  if (entity === "contacts") {
-    return (
-      <div className="table-block entity-table">
-        <table>
-          <thead>
-            <tr>
-              <th>Contacto</th>
-              <th>Cargo</th>
-              <th>Departamento</th>
-              <th>Telefono</th>
-              <th>Email</th>
-              <th>Ubicacion</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <tr key={item.id}>
-                <td><strong>{item.name || "Sin nombre"}</strong></td>
-                <td>{item.title || "Sin cargo"}</td>
-                <td>{item.department || "Sin departamento"}</td>
-                <td>{item.phone || "Sin telefono"}</td>
-                <td>{item.email || "Sin email"}</td>
-                <td>{[item.city, item.state, item.country].filter(Boolean).join(" · ") || "Sin ubicacion"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-
-  return (
-    <div className="table-block entity-table">
-      <table>
-        <thead>
-          <tr>
-            <th>Nombre</th>
-            <th>Detalle</th>
-            <th>Estado</th>
-            <th>Importe</th>
-            <th>Referencia</th>
-            <th>Actualizado</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item) => (
-            <tr key={item.id} className={entity === "quotes" ? "clickable-row" : ""} onClick={() => entity === "quotes" && onQuote(item.id)}>
-              <td><strong>{item.name || item.title || item.documentName || "Sin nombre"}</strong></td>
-              <td>{detailFor(item)}</td>
-              <td>{item.status || item.stage || item.approvalStatus || "Sin estado"}</td>
-              <td>{("total" in item || "amount" in item || "price" in item) ? formatMoney(item.total || item.amount || item.price) : "Sin importe"}</td>
-              <td>{item.number ? `#${item.number}` : item.partNumber || item.type || "Sin referencia"}</td>
-              <td>{shortDate(item.updatedAt || item.createdAt || item.dateStart || item.dueDate) || "Sin fecha"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function EntityList2({ items, entity, onQuote }) {
+function EntityList2({ items, entity, onRowClick, isRowClickable }) {
   const dateValue = (item) => shortDate(item.updatedAt || item.createdAt || item.dateStart || item.dueDate || item.activeDate || item.closeDate || item.expiration) || "Sin fecha";
   const money = (value) => (Number(value || 0) ? formatMoney(value) : "Sin valor");
   const activityColumns = [
@@ -724,7 +711,7 @@ function EntityList2({ items, entity, onQuote }) {
         <thead><tr>{columns.map(([label]) => <th key={label}>{label}</th>)}</tr></thead>
         <tbody>
           {items.map((item) => (
-            <tr key={item.id} className={entity === "quotes" ? "clickable-row" : ""} onClick={() => entity === "quotes" && onQuote(item.id)}>
+            <tr key={item.id} className={isRowClickable(item) ? "clickable-row" : ""} onClick={() => onRowClick(item)}>
               {columns.map(([label, render]) => <td key={label}>{render(item)}</td>)}
             </tr>
           ))}
@@ -734,9 +721,26 @@ function EntityList2({ items, entity, onQuote }) {
   );
 }
 
-function RelatedDrawer({ account, relation, onClose, onCreate, onQuote }) {
+const relationEntityMap = {
+  contacts: "contacts",
+  opportunities: "opportunities",
+  notes: "notes",
+  cases: "cases",
+  disenos: "diseno",
+  cartera: "cartera",
+  acciones: "accion",
+  planesAccion: "plan_de_accion"
+};
+
+function RelatedDrawer({ account, relation, onClose, onCreate, onQuote, onOpenRecord }) {
   const items = relation.items || [];
   const canCreate = creatable.has(relation.create);
+
+  function handleClick(item) {
+    if (relation.key === "quotes") return onQuote(item.id);
+    const recordEntity = relation.key === "activities" ? activityEntityByType[item.type] : relationEntityMap[relation.key];
+    if (recordEntity) onOpenRecord?.({ entity: recordEntity, record: item });
+  }
 
   function metaFor(item) {
     if (relation.key === "quotes") return `#${item.number || ""} - ${item.stage || "Sin etapa"} - ${formatMoney(item.total)}`;
@@ -781,7 +785,7 @@ function RelatedDrawer({ account, relation, onClose, onCreate, onQuote }) {
           <button
             className="related-row"
             key={item.id}
-            onClick={() => relation.key === "quotes" && onQuote(item.id)}
+            onClick={() => handleClick(item)}
           >
             <div>
               <strong>{item.name || item.title || item.documentName || "Sin nombre"}</strong>
@@ -797,70 +801,309 @@ function RelatedDrawer({ account, relation, onClose, onCreate, onQuote }) {
   );
 }
 
-function QuoteDrawer({ id, onClose }) {
+const quoteStages = ["Draft", "Negotiation", "Delivered", "Confirmed", "On Hold", "Closed Accepted", "Closed Lost", "Closed Dead"];
+
+function draftFromQuote(detail) {
+  return {
+    name: detail.quote.name || "",
+    stage: detail.quote.stage || "Draft",
+    paymentMethod: detail.quote.paymentMethod || "",
+    deliveryTime: detail.quote.deliveryTime || "",
+    expiration: detail.quote.expiration ? String(detail.quote.expiration).slice(0, 10) : "",
+    observations: detail.quote.observations || "",
+    lines: detail.lines.map((line) => ({
+      productId: line.productId || null,
+      name: line.name || line.catalogProductName || "",
+      quantity: line.quantity,
+      unitPrice: line.unitPrice,
+      vatAmount: line.vatAmount
+    }))
+  };
+}
+
+function QuoteDrawer({ id, onClose, onChanged }) {
   const [detail, setDetail] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    api.quote(id).then(setDetail);
+    api.quote(id).then((data) => {
+      setDetail(data);
+      setDraft(draftFromQuote(data));
+    });
   }, [id]);
 
-  if (!detail) return null;
-  const { quote, groups, lines } = detail;
+  if (!detail || !draft) return null;
+  const { quote, groups } = detail;
+
+  function updateDraft(key, value) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateLine(index, key, value) {
+    setDraft((current) => ({ ...current, lines: current.lines.map((line, i) => (i === index ? { ...line, [key]: value } : line)) }));
+  }
+
+  function addLine() {
+    setDraft((current) => ({ ...current, lines: [...current.lines, { name: "", quantity: 1, unitPrice: 0, vatAmount: 0 }] }));
+  }
+
+  function removeLine(index) {
+    setDraft((current) => ({ ...current, lines: current.lines.filter((_, i) => i !== index) }));
+  }
+
+  async function save() {
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await api.updateQuote(id, draft);
+      setDetail(updated);
+      setDraft(draftFromQuote(updated));
+      setEditing(false);
+      onChanged?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    if (!window.confirm(`¿Eliminar la cotizacion #${quote.number}? Esta accion no se puede deshacer.`)) return;
+    await api.deleteQuote(id);
+    onChanged?.();
+    onClose();
+  }
+
+  const preview = editing
+    ? draft.lines.reduce(
+        (acc, line) => ({
+          subtotal: acc.subtotal + Number(line.quantity || 0) * Number(line.unitPrice || 0),
+          tax: acc.tax + Number(line.vatAmount || 0)
+        }),
+        { subtotal: 0, tax: 0 }
+      )
+    : null;
 
   return (
     <aside className="drawer">
       <div className="drawer-head">
         <div>
           <span className="pill">Cotizacion #{quote.number}</span>
-          <h2>{quote.name}</h2>
-          <p>{quote.accountName || "Sin cliente"} · {quote.stage}</p>
+          {editing ? <input className="title-input" value={draft.name} onChange={(event) => updateDraft("name", event.target.value)} /> : <h2>{quote.name}</h2>}
+          <p>
+            {quote.accountName || "Sin cliente"} ·{" "}
+            {editing ? (
+              <select value={draft.stage} onChange={(event) => updateDraft("stage", event.target.value)}>
+                {quoteStages.map((stage) => <option key={stage}>{stage}</option>)}
+              </select>
+            ) : (
+              quote.stage
+            )}
+          </p>
         </div>
-        <button className="icon-button" onClick={onClose}><X size={18} /></button>
+        <div className="action-row">
+          <button className="icon-button" onClick={() => (editing ? save() : setEditing(true))} title={editing ? "Guardar" : "Editar"} disabled={saving}>
+            {editing ? <Save size={18} /> : <Pencil size={18} />}
+          </button>
+          <button className="icon-button" onClick={remove} title="Eliminar">
+            <Trash2 size={18} />
+          </button>
+          <button className="icon-button" onClick={onClose}><X size={18} /></button>
+        </div>
       </div>
+      {error ? <div className="alert">{error}</div> : null}
       <div className="quote-summary">
-        <Info icon={BadgeDollarSign} label="Subtotal" value={formatMoney(quote.subtotal)} />
-        <Info icon={BadgeDollarSign} label="IVA" value={formatMoney(quote.tax)} />
-        <Info icon={BadgeDollarSign} label="Total" value={formatMoney(quote.total)} />
-        <Info icon={CalendarClock} label="Vence" value={shortDate(quote.expiration)} />
+        <Info icon={BadgeDollarSign} label="Subtotal" value={formatMoney(editing ? preview.subtotal : quote.subtotal)} />
+        <Info icon={BadgeDollarSign} label="IVA" value={formatMoney(editing ? preview.tax : quote.tax)} />
+        <Info icon={BadgeDollarSign} label="Total" value={formatMoney(editing ? preview.subtotal + preview.tax : quote.total)} />
+        {editing ? (
+          <div className="info">
+            <CalendarClock size={18} />
+            <span>Vence</span>
+            <input type="date" value={draft.expiration} onChange={(event) => updateDraft("expiration", event.target.value)} />
+          </div>
+        ) : (
+          <Info icon={CalendarClock} label="Vence" value={shortDate(quote.expiration)} />
+        )}
       </div>
-      <div className="quote-addresses">
-        <MiniRow title="Facturacion" meta={quote.billingAddress || "Sin direccion"} />
-        <MiniRow title="Entrega" meta={quote.shippingAddress || "Sin direccion"} />
-      </div>
+      {editing ? (
+        <div className="form-grid">
+          <label>Forma de pago<input value={draft.paymentMethod} onChange={(event) => updateDraft("paymentMethod", event.target.value)} /></label>
+          <label>Tiempo de entrega<input value={draft.deliveryTime} onChange={(event) => updateDraft("deliveryTime", event.target.value)} /></label>
+          <label className="wide">Observaciones<textarea value={draft.observations} onChange={(event) => updateDraft("observations", event.target.value)} /></label>
+        </div>
+      ) : (
+        <div className="quote-addresses">
+          <MiniRow title="Facturacion" meta={quote.billingAddress || "Sin direccion"} />
+          <MiniRow title="Entrega" meta={quote.shippingAddress || "Sin direccion"} />
+        </div>
+      )}
       <div className="table-block">
         <div className="panel-title">
           <strong>Lineas</strong>
-          <span>{formatNumber(lines.length)} productos</span>
+          <span>{formatNumber(draft.lines.length)} productos</span>
+          {editing ? (
+            <button type="button" className="mini-action" onClick={addLine}>
+              <Plus size={15} /> Linea
+            </button>
+          ) : null}
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Producto</th>
-              <th>Cant.</th>
-              <th>Unitario</th>
-              <th>IVA</th>
-              <th>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {lines.map((line) => (
-              <tr key={line.id}>
-                <td>{line.number}</td>
-                <td>{line.name || line.catalogProductName}</td>
-                <td>{formatNumber(line.quantity)}</td>
-                <td>{formatMoney(line.unitPrice)}</td>
-                <td>{formatMoney(line.vatAmount)}</td>
-                <td>{formatMoney(line.total)}</td>
-              </tr>
+        {editing ? (
+          <div className="quote-lines-editor">
+            {draft.lines.map((line, index) => (
+              <div className="line-editor" key={index}>
+                <input placeholder="Producto" value={line.name} onChange={(event) => updateLine(index, "name", event.target.value)} required />
+                <input type="number" min="0" step="0.01" placeholder="Cantidad" value={line.quantity} onChange={(event) => updateLine(index, "quantity", event.target.value)} />
+                <input type="number" min="0" step="0.01" placeholder="Unitario" value={line.unitPrice} onChange={(event) => updateLine(index, "unitPrice", event.target.value)} />
+                <input type="number" min="0" step="0.01" placeholder="IVA" value={line.vatAmount} onChange={(event) => updateLine(index, "vatAmount", event.target.value)} />
+                <button type="button" className="icon-button" onClick={() => removeLine(index)} title="Quitar linea" disabled={draft.lines.length <= 1}><X size={16} /></button>
+              </div>
             ))}
-          </tbody>
-        </table>
+          </div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Producto</th>
+                <th>Cant.</th>
+                <th>Unitario</th>
+                <th>IVA</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.lines.map((line) => (
+                <tr key={line.id}>
+                  <td>{line.number}</td>
+                  <td>{line.name || line.catalogProductName}</td>
+                  <td>{formatNumber(line.quantity)}</td>
+                  <td>{formatMoney(line.unitPrice)}</td>
+                  <td>{formatMoney(line.vatAmount)}</td>
+                  <td>{formatMoney(line.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
-      <Panel title="Grupos" count={groups.length}>
-        {groups.map((group) => <MiniRow key={group.id} title={group.name} meta={`${formatMoney(group.subtotal)} · IVA ${formatMoney(group.tax)} · Total ${formatMoney(group.total)}`} />)}
-      </Panel>
-      {quote.observations ? <Panel title="Observaciones" count={1}><MiniRow title="Condiciones" meta={quote.observations} /></Panel> : null}
+      {!editing ? (
+        <Panel title="Grupos" count={groups.length}>
+          {groups.map((group) => <MiniRow key={group.id} title={group.name} meta={`${formatMoney(group.subtotal)} · IVA ${formatMoney(group.tax)} · Total ${formatMoney(group.total)}`} />)}
+        </Panel>
+      ) : null}
+      {!editing && quote.observations ? <Panel title="Observaciones" count={1}><MiniRow title="Condiciones" meta={quote.observations} /></Panel> : null}
+    </aside>
+  );
+}
+
+const recordFieldsByEntity = {
+  contacts: [["name", "Nombre"], ["title", "Cargo"], ["department", "Departamento"], ["phone", "Telefono"], ["email", "Email"]],
+  opportunities: [["name", "Nombre"], ["stage", "Etapa", "select", opportunityStages], ["type", "Tipo"], ["amount", "Monto", "number"], ["probability", "Probabilidad %", "number"], ["closeDate", "Cierre esperado", "date"]],
+  leads: [["name", "Nombre"], ["accountName", "Empresa"], ["status", "Estado"], ["source", "Fuente"], ["phone", "Telefono"], ["email", "Email"], ["city", "Ciudad"], ["country", "Pais"]],
+  products: [["name", "Producto"], ["partNumber", "Codigo"], ["type", "Tipo"], ["price", "Precio", "number"], ["cost", "Costo", "number"]],
+  cases: [["name", "Asunto"], ["status", "Estado", "select", caseStatuses], ["priority", "Prioridad"], ["type", "Tipo"], ["description", "Descripcion", "textarea"]],
+  notes: [["title", "Titulo"], ["description", "Nota", "textarea"]],
+  calls: [["title", "Asunto"], ["status", "Estado", "select", meetingCallStatuses], ["dateStart", "Inicio", "datetime-local"], ["durationMinutes", "Duracion minutos", "number"], ["description", "Descripcion", "textarea"]],
+  meetings: [["title", "Asunto"], ["status", "Estado", "select", meetingCallStatuses], ["dateStart", "Inicio", "datetime-local"], ["durationMinutes", "Duracion minutos", "number"], ["description", "Descripcion", "textarea"]],
+  tasks: [["title", "Asunto"], ["status", "Estado", "select", taskStatuses], ["priority", "Prioridad", "select", taskPriorities], ["dateStart", "Inicio", "datetime-local"], ["dueDate", "Vence", "date"], ["description", "Descripcion", "textarea"]],
+  accion: [["name", "Nombre"], ["status", "Estado"], ["type", "Tipo"], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"], ["total", "Total", "number"]],
+  diseno: [["name", "Nombre"], ["status", "Estado"], ["type", "Tipo"], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"], ["total", "Total", "number"]],
+  plan_de_accion: [["name", "Nombre"], ["status", "Estado"], ["type", "Tipo"], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"], ["total", "Total", "number"]],
+  cartera: [["name", "Nombre"], ["status", "Estado"], ["type", "Tipo"], ["startDate", "Inicio", "date"], ["endDate", "Fin", "date"], ["total", "Total", "number"]]
+};
+
+function formatFieldValue(key, value, type) {
+  if (value === null || value === undefined || value === "") return "Sin dato";
+  if (moneyFieldKeys.has(key)) return formatMoney(value);
+  if (type === "date" || type === "datetime-local") return shortDate(value);
+  return String(value);
+}
+
+function RecordDrawer({ entity, record, onClose, onChanged }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(record);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setDraft(record);
+    setEditing(false);
+  }, [record.id]);
+
+  function update(key, value) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  async function save() {
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await api.updateEntity(entity, record.id, draft);
+      setDraft(updated);
+      setEditing(false);
+      onChanged?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    if (!window.confirm("¿Eliminar este registro? Esta accion no se puede deshacer.")) return;
+    try {
+      await api.deleteEntity(entity, record.id);
+      onChanged?.();
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  const fields = recordFieldsByEntity[entity] || [];
+  const title = record.name || record.title || "Registro";
+
+  return (
+    <aside className="drawer related-drawer">
+      <div className="drawer-head">
+        <div>
+          {record.accountName ? <span className="pill">{record.accountName}</span> : null}
+          <h2>{title}</h2>
+          <p>{moduleLabels[entity] || entity}</p>
+        </div>
+        <div className="action-row">
+          <button className="icon-button" onClick={() => (editing ? save() : setEditing(true))} title={editing ? "Guardar" : "Editar"} disabled={saving}>
+            {editing ? <Save size={18} /> : <Pencil size={18} />}
+          </button>
+          <button className="icon-button" onClick={remove} title="Eliminar">
+            <Trash2 size={18} />
+          </button>
+          <button className="icon-button" onClick={onClose}><X size={18} /></button>
+        </div>
+      </div>
+      {error ? <div className="alert">{error}</div> : null}
+      <div className="form-grid">
+        {fields.map(([key, label, type, options]) => (
+          <label key={key} className={type === "textarea" ? "wide" : ""}>
+            {label}
+            {!editing ? (
+              <strong className="static-value">{formatFieldValue(key, draft[key], type)}</strong>
+            ) : type === "select" ? (
+              <select value={draft[key] || ""} onChange={(event) => update(key, event.target.value)}>
+                {options.map((option) => <option key={option}>{option}</option>)}
+              </select>
+            ) : type === "textarea" ? (
+              <textarea value={draft[key] || ""} onChange={(event) => update(key, event.target.value)} />
+            ) : (
+              <input type={type || "text"} value={draft[key] ?? ""} onChange={(event) => update(key, event.target.value)} />
+            )}
+          </label>
+        ))}
+      </div>
     </aside>
   );
 }
@@ -881,6 +1124,16 @@ function CreateModal({ entity, accountId, onClose, onCreated }) {
 
   function update(key, value) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function pickAccount(account) {
+    if (account) {
+      update("accountId", account.id);
+      setAccountName(account.name);
+    } else {
+      update("accountId", null);
+      setAccountName("");
+    }
   }
 
   async function submit(event) {
@@ -905,9 +1158,9 @@ function CreateModal({ entity, accountId, onClose, onCreated }) {
           <button type="button" className="icon-button" onClick={onClose}><X size={18} /></button>
         </div>
         {entity === "quotes" ? (
-          <QuoteForm form={form} setForm={setForm} update={update} accountName={accountName} />
+          <QuoteForm form={form} setForm={setForm} update={update} accountName={accountName} onPickAccount={pickAccount} />
         ) : (
-          <EntityForm entity={entity} form={form} update={update} accountName={accountName} />
+          <EntityForm entity={entity} form={form} update={update} accountName={accountName} onPickAccount={pickAccount} />
         )}
         {error ? <div className="alert">{error}</div> : null}
         <div className="modal-actions">
@@ -919,14 +1172,78 @@ function CreateModal({ entity, accountId, onClose, onCreated }) {
   );
 }
 
-function ClientField({ accountName, entity }) {
-  if (entity === "accounts" || entity === "products" || entity === "leads") return null;
-  if (accountName) return <label>Cliente<input value={accountName} readOnly /></label>;
-  return <div className="form-note wide">Para relacionar este registro, crealo desde la ficha de un cliente.</div>;
+function AccountPicker({ onPick }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!query.trim()) {
+      setResults([]);
+      return;
+    }
+    const handle = setTimeout(() => {
+      api.accounts({ search: query, pageSize: 8 }).then((data) => setResults(data.items));
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [query]);
+
+  return (
+    <div className="picker">
+      <input
+        placeholder="Buscar cliente por nombre, ciudad o telefono..."
+        value={query}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+      />
+      {open && results.length ? (
+        <div className="picker-results">
+          {results.map((account) => (
+            <button
+              type="button"
+              key={account.id}
+              onClick={() => {
+                onPick(account);
+                setOpen(false);
+                setQuery("");
+              }}
+            >
+              <strong>{account.name}</strong>
+              <span>{[account.industry, account.city].filter(Boolean).join(" · ") || "Sin clasificacion"}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
-function EntityForm({ entity, form, update, accountName }) {
-  const client = <ClientField accountName={accountName} entity={entity} />;
+function ClientField({ entity, form, accountName, onPickAccount }) {
+  if (entity === "accounts" || entity === "products" || entity === "leads") return null;
+  if (form.accountId && accountName) {
+    return (
+      <label className="wide">
+        Cliente
+        <div className="picker-selected">
+          <span>{accountName}</span>
+          <button type="button" className="mini-action" onClick={() => onPickAccount(null)}>Cambiar</button>
+        </div>
+      </label>
+    );
+  }
+  return (
+    <label className="wide">
+      Cliente
+      <AccountPicker onPick={onPickAccount} />
+    </label>
+  );
+}
+
+function EntityForm({ entity, form, update, accountName, onPickAccount }) {
+  const client = <ClientField entity={entity} form={form} accountName={accountName} onPickAccount={onPickAccount} />;
 
   if (entity === "accounts") {
     return (
@@ -962,7 +1279,7 @@ function EntityForm({ entity, form, update, accountName }) {
       <div className="form-grid">
         {client}
         <label>Nombre<input value={form.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
-        <label>Etapa<select value={form.stage || "Prospeccion"} onChange={(event) => update("stage", event.target.value)}><option>Prospeccion</option><option>Calificacion</option><option>Propuesta</option><option>Negociacion</option><option>Ganada</option><option>Perdida</option></select></label>
+        <label>Etapa<select value={form.stage || opportunityStages[0]} onChange={(event) => update("stage", event.target.value)}>{opportunityStages.map((stage) => <option key={stage}>{stage}</option>)}</select></label>
         <label>Tipo<input value={form.type || ""} onChange={(event) => update("type", event.target.value)} /></label>
         <label>Monto<input type="number" min="0" step="0.01" value={form.amount || ""} onChange={(event) => update("amount", event.target.value)} /></label>
         <label>Probabilidad %<input type="number" min="0" max="100" value={form.probability || ""} onChange={(event) => update("probability", event.target.value)} /></label>
@@ -976,8 +1293,8 @@ function EntityForm({ entity, form, update, accountName }) {
       <div className="form-grid">
         {client}
         <label>Asunto<input value={form.title || ""} onChange={(event) => update("title", event.target.value)} required /></label>
-        <label>Estado<select value={form.status || "Planificada"} onChange={(event) => update("status", event.target.value)}><option>Planificada</option><option>En proceso</option><option>Completada</option><option>Cancelada</option></select></label>
-        {entity === "tasks" ? <label>Prioridad<select value={form.priority || "Media"} onChange={(event) => update("priority", event.target.value)}><option>Alta</option><option>Media</option><option>Baja</option></select></label> : null}
+        <label>Estado<select value={form.status || (entity === "tasks" ? taskStatuses[0] : meetingCallStatuses[0])} onChange={(event) => update("status", event.target.value)}>{(entity === "tasks" ? taskStatuses : meetingCallStatuses).map((status) => <option key={status}>{status}</option>)}</select></label>
+        {entity === "tasks" ? <label>Prioridad<select value={form.priority || taskPriorities[0]} onChange={(event) => update("priority", event.target.value)}>{taskPriorities.map((priority) => <option key={priority}>{priority}</option>)}</select></label> : null}
         <label>Inicio<input type="datetime-local" value={form.dateStart || ""} onChange={(event) => update("dateStart", event.target.value)} /></label>
         {entity === "tasks" ? <label>Vence<input type="date" value={form.dueDate || ""} onChange={(event) => update("dueDate", event.target.value)} /></label> : <label>Duracion minutos<input type="number" min="0" value={form.durationMinutes || ""} onChange={(event) => update("durationMinutes", event.target.value)} /></label>}
         <label className="wide">Descripcion<textarea value={form.description || ""} onChange={(event) => update("description", event.target.value)} /></label>
@@ -1000,8 +1317,8 @@ function EntityForm({ entity, form, update, accountName }) {
       <div className="form-grid">
         {client}
         <label>Asunto<input value={form.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
-        <label>Estado<select value={form.status || "Nuevo"} onChange={(event) => update("status", event.target.value)}><option>Nuevo</option><option>Asignado</option><option>En proceso</option><option>Cerrado</option></select></label>
-        <label>Prioridad<select value={form.priority || "Media"} onChange={(event) => update("priority", event.target.value)}><option>Alta</option><option>Media</option><option>Baja</option></select></label>
+        <label>Estado<select value={form.status || caseStatuses[0]} onChange={(event) => update("status", event.target.value)}>{caseStatuses.map((status) => <option key={status}>{status}</option>)}</select></label>
+        <label>Prioridad<input value={form.priority || ""} onChange={(event) => update("priority", event.target.value)} /></label>
         <label>Tipo<input value={form.type || ""} onChange={(event) => update("type", event.target.value)} /></label>
         <label className="wide">Descripcion<textarea value={form.description || ""} onChange={(event) => update("description", event.target.value)} /></label>
       </div>
@@ -1025,7 +1342,7 @@ function EntityForm({ entity, form, update, accountName }) {
       <div className="form-grid">
         <label>Nombre<input value={form.name || ""} onChange={(event) => update("name", event.target.value)} required /></label>
         <label>Empresa<input value={form.accountName || ""} onChange={(event) => update("accountName", event.target.value)} /></label>
-        <label>Estado<input value={form.status || "Nuevo"} onChange={(event) => update("status", event.target.value)} /></label>
+        <label>Estado<input value={form.status || "New"} onChange={(event) => update("status", event.target.value)} /></label>
         <label>Fuente<input value={form.source || ""} onChange={(event) => update("source", event.target.value)} /></label>
         <label>Telefono<input value={form.phone || ""} onChange={(event) => update("phone", event.target.value)} /></label>
         <label>Email<input type="email" value={form.email || ""} onChange={(event) => update("email", event.target.value)} /></label>
@@ -1048,14 +1365,42 @@ function EntityForm({ entity, form, update, accountName }) {
   );
 }
 
-function QuoteForm({ form, setForm, update, accountName }) {
+function QuoteForm({ form, setForm, update, accountName, onPickAccount }) {
+  const [context, setContext] = useState(null);
+
+  useEffect(() => {
+    if (!form.accountId) {
+      setContext(null);
+      return;
+    }
+    api.quoteContext(form.accountId).then(setContext).catch(() => setContext(null));
+  }, [form.accountId]);
+
+  useEffect(() => {
+    if (!context) return;
+    setForm((current) => ({
+      ...current,
+      paymentMethod: current.paymentMethod || context.defaults.paymentMethod || "",
+      deliveryTime: current.deliveryTime || context.defaults.deliveryTime || "",
+      observations: current.observations || context.defaults.observations || ""
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [context]);
+
   function updateLine(index, key, value) {
     const lines = form.lines.map((line, i) => (i === index ? { ...line, [key]: value } : line));
     setForm({ ...form, lines });
   }
+  function addLine() {
+    setForm({ ...form, lines: [...form.lines, { name: "", quantity: 1, unitPrice: 0, vatAmount: 0 }] });
+  }
+  function removeLine(index) {
+    setForm({ ...form, lines: form.lines.filter((_, i) => i !== index) });
+  }
   return (
     <div className="form-grid">
-      {accountName ? <label>Cliente<input value={accountName} readOnly /></label> : <div className="form-note">Crea la cotizacion desde la ficha de un cliente para relacionarla correctamente.</div>}
+      <ClientField entity="quotes" form={form} accountName={accountName} onPickAccount={onPickAccount} />
+      {context ? <div className="form-note wide">Proximo numero de cotizacion: #{context.nextNumber}</div> : null}
       <label>Nombre<input value={form.name || ""} onChange={(event) => update("name", event.target.value)} /></label>
       <label>Forma de pago<input value={form.paymentMethod || ""} onChange={(event) => update("paymentMethod", event.target.value)} /></label>
       <label>Vencimiento<input type="date" value={form.expiration || ""} onChange={(event) => update("expiration", event.target.value)} /></label>
@@ -1063,7 +1408,7 @@ function QuoteForm({ form, setForm, update, accountName }) {
       <div className="wide quote-lines-editor">
         <div className="panel-title">
           <strong>Productos</strong>
-          <button type="button" className="mini-action" onClick={() => setForm({ ...form, lines: [...form.lines, { name: "", quantity: 1, unitPrice: 0, vatAmount: 0 }] })}>
+          <button type="button" className="mini-action" onClick={addLine}>
             <Plus size={15} /> Linea
           </button>
         </div>
@@ -1073,6 +1418,7 @@ function QuoteForm({ form, setForm, update, accountName }) {
             <input type="number" min="0" step="0.01" placeholder="Cantidad" value={line.quantity} onChange={(event) => updateLine(index, "quantity", event.target.value)} />
             <input type="number" min="0" step="0.01" placeholder="Unitario" value={line.unitPrice} onChange={(event) => updateLine(index, "unitPrice", event.target.value)} />
             <input type="number" min="0" step="0.01" placeholder="IVA" value={line.vatAmount} onChange={(event) => updateLine(index, "vatAmount", event.target.value)} />
+            <button type="button" className="icon-button" onClick={() => removeLine(index)} title="Quitar linea" disabled={form.lines.length <= 1}><X size={16} /></button>
           </div>
         ))}
       </div>
